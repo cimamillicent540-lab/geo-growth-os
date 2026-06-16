@@ -1,5 +1,7 @@
 import OpenAI from 'openai';
 
+export const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+
 export function openaiClient() {
   if (!process.env.OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
   return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -8,7 +10,7 @@ export function openaiClient() {
 export async function jsonCompletion<T>(system: string, user: string): Promise<T> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
-    model: 'gpt-4.1-mini',
+    model: OPENAI_MODEL,
     temperature: 0.3,
     response_format: { type: 'json_object' },
     messages: [
@@ -32,7 +34,7 @@ export async function jsonCompletion<T>(system: string, user: string): Promise<T
 export async function textCompletion(system: string, user: string): Promise<string> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
-    model: 'gpt-4.1-mini',
+    model: OPENAI_MODEL,
     temperature: 0.2,
     messages: [
       { role: 'system', content: system },

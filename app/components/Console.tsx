@@ -46,6 +46,15 @@ async function getToken(supabase: ReturnType<typeof supabaseBrowser>) {
   return data.session?.access_token || '';
 }
 
+async function getCurrentAgencyId(supabase: ReturnType<typeof supabaseBrowser>) {
+  const { data } = await supabase
+    .from('agency_members')
+    .select('agency_id')
+    .limit(1)
+    .maybeSingle();
+  return data?.agency_id as string | undefined;
+}
+
 function percent(value?: number | null) {
   return `${Math.round(Number(value || 0) * 100)}%`;
 }
@@ -234,6 +243,7 @@ export function ClientFormPage({ clientId }: { clientId?: string }) {
   const router = useRouter();
   const supabase = useSupabase();
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [agencyId, setAgencyId] = useState<string | null>(null);
   const [form, setForm] = useState<ClientForm>(emptyClientForm);
   const [error, setError] = useState<string | null>(null);
 
@@ -245,11 +255,14 @@ export function ClientFormPage({ clientId }: { clientId?: string }) {
       }
       const { data: userData } = await supabase.auth.getUser();
       const { data: profileData } = await supabase.from('user_profiles').select('*').eq('user_id', userData.user?.id || '').maybeSingle();
+      const currentAgencyId = await getCurrentAgencyId(supabase);
       setProfile((profileData as UserProfile | null) || null);
+      setAgencyId(currentAgencyId || null);
       if (clientId) {
         const { data } = await supabase.from('clients').select('*').eq('id', clientId).single();
         const client = data as Client | null;
         if (client) {
+          setAgencyId(client.agency_id);
           setForm({
             name: client.name,
             website: client.website,
@@ -273,6 +286,7 @@ export function ClientFormPage({ clientId }: { clientId?: string }) {
     setError(null);
     const payload = {
       ...form,
+      ...(agencyId ? { agency_id: agencyId } : {}),
       competitors: form.competitors.split(',').map((item) => item.trim()).filter(Boolean)
     };
     const result = clientId
@@ -298,6 +312,7 @@ export function ClientFormPage({ clientId }: { clientId?: string }) {
       ) : (
         <form className="form card" onSubmit={submit}>
           {error && <p className="dangerText">{error}</p>}
+          {!agencyId && <p className="dangerText">No agency membership found. Ask an owner to add this user to an agency.</p>}
           <div className="row">
             <label>Client Name<input className="input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
             <label>Website<input className="input" value={form.website} onChange={(event) => setForm({ ...form, website: event.target.value })} required /></label>
@@ -313,7 +328,7 @@ export function ClientFormPage({ clientId }: { clientId?: string }) {
           <label>Product Description<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
           <label>Core Selling Points<textarea value={form.main_products} onChange={(event) => setForm({ ...form, main_products: event.target.value })} /></label>
           <label>Compliance Notes<textarea value={form.compliance_notes} onChange={(event) => setForm({ ...form, compliance_notes: event.target.value })} placeholder="No minors, no guaranteed winnings, local laws, risk disclosure..." /></label>
-          <button className="btn primary" type="submit">{clientId ? 'Save Changes' : 'Create Client'}</button>
+          <button className="btn primary" type="submit" disabled={!agencyId}>{clientId ? 'Save Changes' : 'Create Client'}</button>
         </form>
       )}
     </AuthGate>
@@ -481,6 +496,7 @@ export function QueriesPage({ clientId }: { clientId: string }) {
     const { data: client } = await supabase.from('clients').select('*').eq('id', clientId).single();
     await supabase.from('geo_queries').insert({
       client_id: clientId,
+      agency_id: client?.agency_id,
       query_text: newQuery,
       language: client?.target_language || 'English',
       country: client?.target_country || 'Global',
@@ -543,6 +559,7 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
   const [data, setData] = useState<{ run: GeoRun | null; insight: GeoInsight | null; answers: Array<GeoAnswer & { geo_queries?: GeoQuery }> }>({ run: null, insight: null, answers: [] });
 
   useEffect(() => {
+    let stop = false;
     async function load() {
       if (!supabaseConfigured()) {
         setData({ run: null, insight: null, answers: [] });
@@ -556,6 +573,25 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
       setData({ run: (run as GeoRun | null) || null, insight: (insight as GeoInsight | null) || null, answers: (answers as Array<GeoAnswer & { geo_queries?: GeoQuery }>) || [] });
     }
     load();
+    const interval = setInterval(async () => {
+      const token = await getToken(supabase);
+      if (!token || stop) return;
+      const response = await fetch(`/api/runs/${runId}/status`, {
+        headers: { authorization: `Bearer ${token}` },
+        cache: 'no-store'
+      });
+      if (!response.ok || stop) return;
+      const nextRun = await response.json();
+      setData((current) => ({ ...current, run: { ...(current.run || {}), ...nextRun } as GeoRun }));
+      if (nextRun.status === 'completed' || nextRun.status === 'failed') {
+        clearInterval(interval);
+        await load();
+      }
+    }, 2500);
+    return () => {
+      stop = true;
+      clearInterval(interval);
+    };
   }, [clientId, runId, supabase]);
 
   const competitorCounts: Record<string, number> = {};
@@ -578,6 +614,16 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
         <Stat label="Mention Rate" value={percent(Number(data.insight?.mention_rate || 0))} />
         <Stat label="Recommendation Rate" value={percent(Number(data.insight?.recommendation_rate || 0))} />
       </div>
+      {(data.run?.status === 'pending' || data.run?.status === 'running') && (
+        <div className="card section">
+          <h2>Run Progress</h2>
+          <div className="bar">
+            <i style={{ width: `${data.run.total_queries ? Math.round((data.run.processed_queries / data.run.total_queries) * 100) : 0}%` }} />
+          </div>
+          <p className="muted">{data.run.processed_queries} / {data.run.total_queries} questions processed. This page refreshes automatically.</p>
+        </div>
+      )}
+      {data.run?.status === 'failed' && <div className="empty dangerText section">{data.run.error_message || 'Run failed.'}</div>}
       <div className="card section">
         <h2>Competitor Mentions</h2>
         <p>{Object.entries(competitorCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}: ${count}`).join(' | ') || 'No competitor pressure detected yet.'}</p>

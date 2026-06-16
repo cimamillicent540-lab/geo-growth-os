@@ -10,6 +10,7 @@ export type Client = {
   competitors: string[];
   compliance_notes: string | null;
   owner_user_id: string | null;
+  agency_id: string;
   created_at: string;
   updated_at: string;
 };
@@ -28,6 +29,7 @@ export type UserProfile = {
 export type GeoQuery = {
   id: string;
   client_id: string;
+  agency_id: string;
   query_text: string;
   language: string;
   country: string;
@@ -47,6 +49,9 @@ export type GeoRun = {
   created_by: string | null;
   error_message: string | null;
   share_token: string;
+  agency_id: string;
+  total_queries: number;
+  processed_queries: number;
   created_at: string;
 };
 
@@ -54,6 +59,7 @@ export type GeoAnswer = {
   id: string;
   run_id: string;
   client_id: string;
+  agency_id: string;
   query_id: string | null;
   model_provider: string;
   model_name: string;
@@ -73,6 +79,7 @@ export type GeoInsight = {
   id: string;
   client_id: string;
   run_id: string;
+  agency_id: string;
   visibility_score: number;
   mention_rate: number;
   recommendation_rate: number;
@@ -89,6 +96,7 @@ export type ContentTask = {
   id: string;
   client_id: string;
   run_id: string | null;
+  agency_id: string;
   title: string;
   content_type: 'faq' | 'comparison_page' | 'blog' | 'landing_page' | 'third_party_review' | 'reddit_quora_answer' | 'ad_creative_angle';
   target_query: string | null;
@@ -98,4 +106,19 @@ export type ContentTask = {
   brief: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type Agency = {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+};
+
+export type AgencyMember = {
+  id: string;
+  agency_id: string;
+  user_id: string;
+  role: 'owner' | 'admin' | 'member';
+  created_at: string;
 };

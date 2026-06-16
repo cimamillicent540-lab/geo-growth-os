@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { canAccessClient, forbidden, hasRole, requireApiAuth } from '@/lib/auth';
+import { forbidden, hasAgencyOperatorAccess, hasRole, requireApiAuth, requireClientInAgency } from '@/lib/auth';
 import { compliancePrompt, normalizeIntent, normalizePriority } from '@/lib/geo';
 import { jsonCompletion } from '@/lib/openai';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
@@ -16,11 +16,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const auth = await requireApiAuth(req);
   if (auth instanceof NextResponse) return auth;
   if (!hasRole(auth.profile, ['admin', 'strategist'])) return forbidden('Client users cannot generate GEO queries.');
-  if (!canAccessClient(auth.profile, id)) return forbidden();
 
   const supabase = supabaseAdmin();
-  const { data: client, error } = await supabase.from('clients').select('*').eq('id', id).single();
-  if (error || !client) return NextResponse.json({ error: 'Client not found' }, { status: 404 });
+  const clientResult = await requireClientInAgency(auth, id);
+  if (clientResult.error) return clientResult.error;
+  const client = clientResult.client;
+  if (!hasAgencyOperatorAccess(auth, client.agency_id)) return forbidden('You are not a member of this client agency.');
 
   const industry = String(client.industry || '').toLowerCase();
   const gamblingTerms = industry.includes('casino') || industry.includes('bet')
@@ -70,6 +71,7 @@ Return JSON exactly as:
     .slice(0, 120)
     .map((query) => ({
       client_id: id,
+      agency_id: client.agency_id,
       query_text: String(query.query_text || '').trim(),
       language: client.target_language,
       country: client.target_country,

@@ -302,6 +302,22 @@ textarea {
   color: var(--muted);
 }
 
+.bar {
+  height: 10px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ebf2;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 180ms ease;
+}
+
 .report {
   background: #fff;
   border: 1px solid var(--line);
