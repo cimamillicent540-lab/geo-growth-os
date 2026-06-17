@@ -69,8 +69,22 @@ async function parseActionResponse(response: Response) {
   try {
     return JSON.parse(text) as Record<string, string>;
   } catch {
-    return { error: text.slice(0, 400) || `HTTP ${response.status}` };
+    return { error: cleanResponseText(text) || `HTTP ${response.status}` };
   }
+}
+
+function cleanResponseText(text: string) {
+  return text
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {

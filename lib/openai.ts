@@ -58,30 +58,37 @@ export function describeOpenAIError(error: unknown) {
   return 'Unknown OpenAI error';
 }
 
-export async function jsonCompletion<T>(system: string, user: string): Promise<T> {
+type CompletionOptions = {
+  maxTokens?: number;
+  timeoutMs?: number;
+};
+
+export async function jsonCompletion<T>(system: string, user: string, options: CompletionOptions = {}): Promise<T> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
     model: OPENAI_MODEL,
     temperature: 0.3,
+    max_completion_tokens: options.maxTokens,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user }
     ]
-  });
+  }, options.timeoutMs ? { timeout: options.timeoutMs } : undefined);
   const content = res.choices[0]?.message?.content || '{}';
   return extractJsonObject(content) as T;
 }
 
-export async function textCompletion(system: string, user: string): Promise<string> {
+export async function textCompletion(system: string, user: string, options: CompletionOptions = {}): Promise<string> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
     model: OPENAI_MODEL,
     temperature: 0.2,
+    max_completion_tokens: options.maxTokens,
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user }
     ]
-  });
+  }, options.timeoutMs ? { timeout: options.timeoutMs } : undefined);
   return res.choices[0]?.message?.content || '';
 }
