@@ -7,6 +7,57 @@ export function openaiClient() {
   return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
+export class OpenAIJsonParseError extends Error {
+  constructor(message: string, public readonly rawContent: string) {
+    super(message);
+    this.name = 'OpenAIJsonParseError';
+  }
+}
+
+export function extractJsonObject(content: string) {
+  const trimmed = content.trim();
+  const codeBlock = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = [
+    trimmed,
+    codeBlock?.[1]?.trim(),
+    sliceBetween(trimmed, '{', '}')
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next extraction strategy.
+    }
+  }
+
+  throw new OpenAIJsonParseError(
+    `OpenAI returned text that could not be parsed as JSON. Preview: ${trimmed.slice(0, 240)}`,
+    content
+  );
+}
+
+function sliceBetween(content: string, open: string, close: string) {
+  const start = content.indexOf(open);
+  const end = content.lastIndexOf(close);
+  return start >= 0 && end > start ? content.slice(start, end + 1) : '';
+}
+
+export function describeOpenAIError(error: unknown) {
+  if (error instanceof OpenAIJsonParseError) return error.message;
+  if (error instanceof Error) {
+    const details = error as Error & { status?: number; code?: string; type?: string };
+    const parts = [
+      details.status ? `status ${details.status}` : '',
+      details.code ? `code ${details.code}` : '',
+      details.type ? `type ${details.type}` : '',
+      details.message
+    ].filter(Boolean);
+    return parts.join(' | ');
+  }
+  return 'Unknown OpenAI error';
+}
+
 export async function jsonCompletion<T>(system: string, user: string): Promise<T> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
@@ -19,16 +70,7 @@ export async function jsonCompletion<T>(system: string, user: string): Promise<T
     ]
   });
   const content = res.choices[0]?.message?.content || '{}';
-  try {
-    return JSON.parse(content) as T;
-  } catch {
-    const start = content.indexOf('{');
-    const end = content.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      return JSON.parse(content.slice(start, end + 1)) as T;
-    }
-    throw new Error('OpenAI did not return valid JSON');
-  }
+  return extractJsonObject(content) as T;
 }
 
 export async function textCompletion(system: string, user: string): Promise<string> {

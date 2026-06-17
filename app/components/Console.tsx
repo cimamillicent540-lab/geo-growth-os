@@ -63,6 +63,16 @@ function jsonList(value: unknown) {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+async function parseActionResponse(response: Response) {
+  const text = await response.text();
+  if (!text) return {} as Record<string, string>;
+  try {
+    return JSON.parse(text) as Record<string, string>;
+  } catch {
+    return { error: text.slice(0, 400) || `HTTP ${response.status}` };
+  }
+}
+
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="card">
@@ -346,6 +356,7 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
     queryCount: number;
   }>>({ loading: true, data: { profile: null, client: null, runs: [], latestInsight: null, tasks: [], queryCount: 0 }, error: null });
   const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   async function load() {
     if (!supabaseConfigured()) {
@@ -381,22 +392,32 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
 
   async function runAction(kind: 'generate' | 'run') {
     setBusy(kind);
-    const token = await getToken(supabase);
-    const endpoint = kind === 'generate'
-      ? `/api/clients/${clientId}/generate-queries`
-      : `/api/clients/${clientId}/run-geo-test`;
-    const response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
-    const result = await response.json();
-    setBusy(null);
-    if (!response.ok) {
-      alert(result.error || 'Action failed');
-      return;
+    setActionError(null);
+    try {
+      const token = await getToken(supabase);
+      if (!token) throw new Error('Missing login session. Please sign in again.');
+
+      const endpoint = kind === 'generate'
+        ? `/api/clients/${clientId}/generate-queries`
+        : `/api/clients/${clientId}/run-geo-test`;
+      const response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+      const result = await parseActionResponse(response);
+
+      if (!response.ok) {
+        const stage = result.stage ? ` [${result.stage}]` : '';
+        const requestId = result.request_id ? ` Request ID: ${result.request_id}` : '';
+        throw new Error(`${result.error || 'Action failed'}${stage}.${requestId}`);
+      }
+      if (kind === 'run') {
+        location.href = `/clients/${clientId}/runs/${result.run_id}`;
+        return;
+      }
+      await load();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Action failed');
+    } finally {
+      setBusy(null);
     }
-    if (kind === 'run') {
-      location.href = `/clients/${clientId}/runs/${result.run_id}`;
-      return;
-    }
-    await load();
   }
 
   if (state.loading) return <div className="empty">Loading client...</div>;
@@ -421,6 +442,8 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
           {latestCompletedRun && <Link className="btn" href={`/clients/${clientId}/reports/${latestCompletedRun.id}`}>View Latest Report</Link>}
         </div>
       </div>
+
+      {actionError && <div className="empty dangerText section">{actionError}</div>}
 
       <div className="grid section">
         <Stat label="AI Visibility Score" value={Math.round(Number(latestInsight?.visibility_score || 0))} />

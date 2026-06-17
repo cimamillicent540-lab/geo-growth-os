@@ -65,14 +65,23 @@ export async function requireApiAuth(req: Request): Promise<AuthContext | NextRe
     return NextResponse.json({ error: 'No user profile has been assigned. Ask an admin to assign a role.' }, { status: 403 });
   }
 
-  if (shouldBootstrapAdmin) {
+  if (shouldBootstrapAdmin || profile.role === 'admin') {
     await ensureDefaultAgencyMembership(user.id);
   }
 
-  const { data: memberships } = await supabase
+  let { data: memberships } = await supabase
     .from('agency_members')
     .select('agency_id, role')
     .eq('user_id', user.id);
+
+  if (!memberships?.length && profile.role === 'admin') {
+    await ensureDefaultAgencyMembership(user.id);
+    const { data: refreshedMemberships } = await supabase
+      .from('agency_members')
+      .select('agency_id, role')
+      .eq('user_id', user.id);
+    memberships = refreshedMemberships;
+  }
 
   const agencyRoleById: Record<string, 'owner' | 'admin' | 'member'> = {};
   for (const membership of memberships || []) {
@@ -102,7 +111,7 @@ export function forbidden(message = 'Forbidden') {
   return NextResponse.json({ error: message }, { status: 403 });
 }
 
-async function ensureDefaultAgencyMembership(userId: string) {
+export async function ensureDefaultAgencyMembership(userId: string) {
   const supabase = supabaseAdmin();
   const { data: agency, error: agencyError } = await supabase
     .from('agencies')
@@ -110,11 +119,13 @@ async function ensureDefaultAgencyMembership(userId: string) {
     .select('id')
     .single();
 
-  if (agencyError || !agency) return;
+  if (agencyError || !agency) return null;
 
   await supabase
     .from('agency_members')
     .upsert({ agency_id: agency.id, user_id: userId, role: 'owner' }, { onConflict: 'agency_id,user_id' });
+
+  return agency.id as string;
 }
 
 export async function requireClientInAgency(auth: AuthContext, clientId: string) {
@@ -127,6 +138,19 @@ export async function requireClientInAgency(auth: AuthContext, clientId: string)
 
   if (error || !client) {
     return { error: NextResponse.json({ error: 'Client not found' }, { status: 404 }) };
+  }
+
+  if (!client.agency_id && auth.agencyIds[0] && hasRole(auth.profile, ['admin', 'strategist'])) {
+    const { data: repairedClient } = await supabase
+      .from('clients')
+      .update({ agency_id: auth.agencyIds[0] })
+      .eq('id', clientId)
+      .select('*')
+      .single();
+
+    if (repairedClient) {
+      return { client: repairedClient };
+    }
   }
 
   if (!auth.agencyIds.includes(client.agency_id) && auth.profile.client_id !== clientId) {
