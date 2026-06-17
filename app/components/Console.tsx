@@ -73,6 +73,16 @@ async function parseActionResponse(response: Response) {
   }
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function cleanResponseText(text: string) {
   return text
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -371,6 +381,7 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
   }>>({ loading: true, data: { profile: null, client: null, runs: [], latestInsight: null, tasks: [], queryCount: 0 }, error: null });
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   async function load() {
     if (!supabaseConfigured()) {
@@ -404,9 +415,17 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
     load();
   }, [clientId]);
 
+  useEffect(() => {
+    if (busy === 'generate' && state.data.queryCount > 0) {
+      setBusy(null);
+      setActionNotice(`Query library is ready with ${state.data.queryCount} questions.`);
+    }
+  }, [busy, state.data.queryCount]);
+
   async function runAction(kind: 'generate' | 'run') {
     setBusy(kind);
     setActionError(null);
+    setActionNotice(null);
     try {
       const token = await getToken(supabase);
       if (!token) throw new Error('Missing login session. Please sign in again.');
@@ -414,7 +433,7 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
       const endpoint = kind === 'generate'
         ? `/api/clients/${clientId}/generate-queries`
         : `/api/clients/${clientId}/run-geo-test`;
-      const response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+      const response = await fetchWithTimeout(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}` } }, kind === 'generate' ? 25000 : 45000);
       const result = await parseActionResponse(response);
 
       if (!response.ok) {
@@ -426,8 +445,17 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
         location.href = `/clients/${clientId}/runs/${result.run_id}`;
         return;
       }
+      setBusy(null);
+      setActionNotice(result.source === 'fallback'
+        ? `Generated ${result.inserted || 'the'} queries with fallback templates because OpenAI was slow or unavailable.`
+        : `Generated ${result.inserted || 'the'} GEO queries.`);
       await load();
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError' && kind === 'generate') {
+        setActionNotice('Generation request timed out in the browser, but the server may have already inserted queries. Refreshing the count now.');
+        await load();
+        return;
+      }
       setActionError(error instanceof Error ? error.message : 'Action failed');
     } finally {
       setBusy(null);
@@ -457,6 +485,7 @@ export function ClientDetailPage({ clientId }: { clientId: string }) {
         </div>
       </div>
 
+      {actionNotice && <div className="empty section">{actionNotice}</div>}
       {actionError && <div className="empty dangerText section">{actionError}</div>}
 
       <div className="grid section">
