@@ -46,18 +46,22 @@ GEO Growth OS is a Next.js full-stack app with App Router API routes. Do not dep
 4. Build command: `npm run build:cloudflare`.
 5. Deploy command: `npm run deploy:cloudflare`.
 6. Confirm `wrangler.jsonc` is committed. It points Wrangler to `.open-next/worker.js` and `.open-next/assets`.
-7. Add Cloudflare environment variables/secrets:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `OPENAI_API_KEY`
+7. Edit the non-sensitive `vars` block in `wrangler.jsonc`:
+   - `NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key`
    - `OPENAI_MODEL=gpt-4.1-mini`
    - `APP_BASE_URL=https://your-cloudflare-workers-domain`
    - `GEO_ADMIN_EMAILS=you@example.com`
-   - `INTERNAL_WORKER_SECRET=<long-random-secret>`
 8. Set `APP_BASE_URL` to the real Cloudflare production URL. The async GEO worker uses this URL to call `APP_BASE_URL + "/api/runs/worker"` for the next batch.
-9. Keep secrets in the Cloudflare dashboard or `wrangler secret put`; do not commit them.
-10. `npm run deploy:cloudflare` uses `wrangler deploy --keep-vars` so Dashboard-managed variables are preserved during CLI deploys.
+9. Store secrets with Wrangler, never in `wrangler.jsonc` and never in Git:
+
+```bash
+npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put INTERNAL_WORKER_SECRET
+```
+
+10. `npm run deploy:cloudflare` uses `wrangler deploy --keep-vars` so existing Dashboard-managed variables and secrets are preserved during CLI deploys.
 11. After deploying, sign in as an admin and open `/api/debug/env` to confirm the Worker can see the expected variables. The endpoint returns booleans only and never returns secret values.
 
 Local Cloudflare checks:

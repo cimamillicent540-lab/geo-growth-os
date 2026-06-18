@@ -14,6 +14,13 @@
       "service": "geo-growth-os"
     }
   ],
+  "vars": {
+    "NEXT_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "replace-with-your-supabase-anon-key",
+    "OPENAI_MODEL": "gpt-4.1-mini",
+    "APP_BASE_URL": "https://geo-growth-os.your-subdomain.workers.dev",
+    "GEO_ADMIN_EMAILS": "you@example.com"
+  },
   "observability": {
     "enabled": true
   }
