@@ -44,7 +44,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .from('geo_runs')
       .update({ status: 'running', error_message: null })
       .eq('id', resumableRun.id);
-    await dispatchWorker(resumableRun.id, baseUrl);
+    await dispatchWorker(resumableRun.id, baseUrl, {
+      background: true,
+      onError: (error) => markDispatchFailed(supabase, resumableRun.id, error)
+    });
     return NextResponse.json({
       run_id: resumableRun.id,
       share_token: resumableRun.share_token,
@@ -81,12 +84,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const baseUrl = getEnv('APP_BASE_URL') || new URL(req.url).origin;
-  dispatchWorker(run.id, baseUrl).catch(async (error) => {
-    await supabase
-      .from('geo_runs')
-      .update({ status: 'failed', error_message: error instanceof Error ? error.message : 'Worker dispatch failed' })
-      .eq('id', run.id);
+  await dispatchWorker(run.id, baseUrl, {
+    background: true,
+    onError: (error) => markDispatchFailed(supabase, run.id, error)
   });
 
   return NextResponse.json({ run_id: run.id, share_token: run.share_token, queued: true, total_queries: queries.length });
+}
+
+async function markDispatchFailed(supabase: ReturnType<typeof supabaseAdmin>, runId: string, error: unknown) {
+  await supabase
+    .from('geo_runs')
+    .update({ status: 'failed', error_message: error instanceof Error ? error.message : 'Worker dispatch failed' })
+    .eq('id', runId);
 }

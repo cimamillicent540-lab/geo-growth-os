@@ -31,6 +31,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .update({ status: 'running', error_message: null })
     .eq('id', id);
 
-  await dispatchWorker(id, baseUrl);
+  await dispatchWorker(id, baseUrl, {
+    background: true,
+    onError: async (error) => {
+      await supabase
+        .from('geo_runs')
+        .update({ status: 'failed', error_message: error instanceof Error ? error.message : 'Worker dispatch failed' })
+        .eq('id', id);
+    }
+  });
   return NextResponse.json({ ok: true, status: 'running' });
 }
