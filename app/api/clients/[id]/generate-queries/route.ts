@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { forbidden, hasAgencyOperatorAccess, hasRole, requireApiAuth, requireClientInAgency } from '@/lib/auth';
+import { getEnv } from '@/lib/env';
 import { compliancePrompt, normalizeIntent, normalizePriority } from '@/lib/geo';
-import { describeOpenAIError, jsonCompletion, OPENAI_MODEL } from '@/lib/openai';
+import { describeOpenAIError, jsonCompletion, openAIModel } from '@/lib/openai';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import type { Client } from '@/lib/types';
 
@@ -32,7 +33,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (auth instanceof NextResponse) return auth;
     if (!hasRole(auth.profile, ['admin', 'strategist'])) return forbidden('Client users cannot generate GEO queries.');
 
-    if (!process.env.OPENAI_API_KEY) {
+    if (!getEnv('OPENAI_API_KEY')) {
       return fail(requestId, 'env', 'Missing OPENAI_API_KEY on the server.', 500);
     }
 
@@ -54,7 +55,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       clientId: id,
       agencyId: client.agency_id,
       userId: auth.user.id,
-      model: OPENAI_MODEL
+      model: openAIModel()
     });
 
     const industry = String(client.industry || '').toLowerCase();

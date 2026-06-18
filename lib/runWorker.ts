@@ -1,3 +1,4 @@
+import { getEnv } from '@/lib/env';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const RUN_STALL_MS = 5 * 60 * 1000;
@@ -43,7 +44,7 @@ export async function buildRunStatus(run: RunForStatus) {
 }
 
 export async function dispatchWorker(runId: string, baseUrl: string) {
-  const workerSecret = process.env.INTERNAL_WORKER_SECRET || process.env.WORKER_SECRET;
+  const workerSecret = getEnv('INTERNAL_WORKER_SECRET') || getEnv('WORKER_SECRET');
   if (!workerSecret) {
     throw new Error('Missing INTERNAL_WORKER_SECRET');
   }

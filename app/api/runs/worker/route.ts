@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { getEnv } from '@/lib/env';
 import { compliancePrompt, normalizeContentType, normalizePriority, scoreInsight } from '@/lib/geo';
 import { normalizeCompetitors } from '@/lib/normalize';
-import { describeOpenAIError, jsonCompletion, OPENAI_MODEL, textCompletion } from '@/lib/openai';
+import { describeOpenAIError, jsonCompletion, openAIModel, textCompletion } from '@/lib/openai';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const maxDuration = 60;
@@ -51,7 +52,7 @@ type SavedAnswer = {
 };
 
 export async function POST(req: Request) {
-  const workerSecret = process.env.INTERNAL_WORKER_SECRET || process.env.WORKER_SECRET;
+  const workerSecret = getEnv('INTERNAL_WORKER_SECRET') || getEnv('WORKER_SECRET');
   if (!workerSecret || req.headers.get('x-worker-secret') !== workerSecret) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
@@ -59,7 +60,7 @@ export async function POST(req: Request) {
   const { run_id } = await req.json().catch(() => ({ run_id: '' }));
   if (!run_id) return NextResponse.json({ error: 'run_id required' }, { status: 400 });
 
-  const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+  const baseUrl = getEnv('APP_BASE_URL') || new URL(req.url).origin;
   const supabase = supabaseAdmin();
 
   try {
@@ -221,7 +222,7 @@ Return JSON exactly as:
     agency_id: run.agency_id,
     query_id: query.id,
     model_provider: 'openai',
-    model_name: OPENAI_MODEL,
+    model_name: openAIModel(),
     answer_text: answer,
     brand_mentioned: Boolean(analysis.brand_mentioned),
     brand_position: analysis.brand_position || null,
@@ -258,7 +259,7 @@ async function insertFallbackAnswer({
     agency_id: run.agency_id,
     query_id: query.id,
     model_provider: 'openai',
-    model_name: OPENAI_MODEL,
+    model_name: openAIModel(),
     answer_text: `Worker could not complete this query. ${message}`,
     brand_mentioned: false,
     brand_position: null,

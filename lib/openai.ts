@@ -1,10 +1,14 @@
 import OpenAI from 'openai';
+import { getEnv } from '@/lib/env';
 
-export const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+export function openAIModel() {
+  return getEnv('OPENAI_MODEL') || 'gpt-4.1-mini';
+}
 
 export function openaiClient() {
-  if (!process.env.OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const apiKey = getEnv('OPENAI_API_KEY');
+  if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+  return new OpenAI({ apiKey });
 }
 
 export class OpenAIJsonParseError extends Error {
@@ -66,7 +70,7 @@ type CompletionOptions = {
 export async function jsonCompletion<T>(system: string, user: string, options: CompletionOptions = {}): Promise<T> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
+    model: openAIModel(),
     temperature: 0.3,
     max_completion_tokens: options.maxTokens,
     response_format: { type: 'json_object' },
@@ -82,7 +86,7 @@ export async function jsonCompletion<T>(system: string, user: string, options: C
 export async function textCompletion(system: string, user: string, options: CompletionOptions = {}): Promise<string> {
   const openai = openaiClient();
   const res = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
+    model: openAIModel(),
     temperature: 0.2,
     max_completion_tokens: options.maxTokens,
     messages: [

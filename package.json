@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:cloudflare": "opennextjs-cloudflare build",
-    "deploy:cloudflare": "wrangler deploy",
+    "deploy:cloudflare": "wrangler deploy --keep-vars",
     "preview:cloudflare": "opennextjs-cloudflare build && wrangler dev",
     "start": "next start",
     "lint": "eslint ."

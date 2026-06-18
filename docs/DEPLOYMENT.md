@@ -57,6 +57,8 @@ GEO Growth OS is a Next.js full-stack app with App Router API routes. Do not dep
    - `INTERNAL_WORKER_SECRET=<long-random-secret>`
 8. Set `APP_BASE_URL` to the real Cloudflare production URL. The async GEO worker uses this URL to call `APP_BASE_URL + "/api/runs/worker"` for the next batch.
 9. Keep secrets in the Cloudflare dashboard or `wrangler secret put`; do not commit them.
+10. `npm run deploy:cloudflare` uses `wrangler deploy --keep-vars` so Dashboard-managed variables are preserved during CLI deploys.
+11. After deploying, sign in as an admin and open `/api/debug/env` to confirm the Worker can see the expected variables. The endpoint returns booleans only and never returns secret values.
 
 Local Cloudflare checks:
 
@@ -79,6 +81,7 @@ Cloudflare-specific notes:
 - `wrangler.jsonc` enables `nodejs_compat` because the app uses server-side SDKs that expect Node-compatible APIs.
 - The config intentionally does not require an R2 incremental-cache bucket for the MVP. Add R2 later if you need persistent ISR/cache behavior.
 - The Netlify config can remain in the repo; Cloudflare uses `wrangler.jsonc` and the OpenNext output.
+- Runtime environment variables in API routes are read through the OpenNext Cloudflare runtime context, with local `process.env` fallback for development.
 
 ## Post-Deploy Checks
 

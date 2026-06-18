@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getEnv } from '@/lib/env';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import type { UserProfile, UserRole } from '@/lib/types';
 
@@ -13,7 +14,7 @@ export type AuthContext = {
 };
 
 export function adminEmails() {
-  return (process.env.GEO_ADMIN_EMAILS || '')
+  return (getEnv('GEO_ADMIN_EMAILS') || '')
     .split(',')
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean);

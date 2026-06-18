@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiAuth, requireClientInAgency } from '@/lib/auth';
+import { getEnv } from '@/lib/env';
 import { dispatchWorker } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
@@ -24,7 +25,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: true, status: 'completed' });
   }
 
-  const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+  const baseUrl = getEnv('APP_BASE_URL') || new URL(req.url).origin;
   await supabase
     .from('geo_runs')
     .update({ status: 'running', error_message: null })

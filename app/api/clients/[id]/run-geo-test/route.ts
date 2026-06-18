@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { forbidden, hasAgencyOperatorAccess, hasRole, requireApiAuth, requireClientInAgency } from '@/lib/auth';
+import { getEnv } from '@/lib/env';
 import { dispatchWorker } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
@@ -38,7 +39,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .limit(5);
   const resumableRun = (existingRuns || []).find((run) => Number(run.processed_queries || 0) < Number(run.total_queries || 0));
   if (resumableRun) {
-    const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+    const baseUrl = getEnv('APP_BASE_URL') || new URL(req.url).origin;
     await supabase
       .from('geo_runs')
       .update({ status: 'running', error_message: null })
@@ -71,7 +72,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: runError?.message || 'Could not create run' }, { status: 500 });
   }
 
-  if (!process.env.INTERNAL_WORKER_SECRET && !process.env.WORKER_SECRET) {
+  if (!getEnv('INTERNAL_WORKER_SECRET') && !getEnv('WORKER_SECRET')) {
     await supabase
       .from('geo_runs')
       .update({ status: 'failed', error_message: 'Missing INTERNAL_WORKER_SECRET' })
@@ -79,7 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: 'Missing INTERNAL_WORKER_SECRET', run_id: run.id }, { status: 500 });
   }
 
-  const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+  const baseUrl = getEnv('APP_BASE_URL') || new URL(req.url).origin;
   dispatchWorker(run.id, baseUrl).catch(async (error) => {
     await supabase
       .from('geo_runs')
