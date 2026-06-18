@@ -15,11 +15,11 @@
     }
   ],
   "vars": {
-    "NEXT_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
-    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "replace-with-your-supabase-anon-key",
+    "NEXT_PUBLIC_SUPABASE_URL": "https://mdbdtkzhhhidddneigju.supabase.co",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kYmR0a3poaGhpZGRkbmVpZ2p1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MTQxODgsImV4cCI6MjA5NzA5MDE4OH0.XIyVBXgFuKrRYmvYKLNUiUkkZnTTfOGJeRe6N_Jg8O0",
     "OPENAI_MODEL": "gpt-4.1-mini",
-    "APP_BASE_URL": "https://geo-growth-os.your-subdomain.workers.dev",
-    "GEO_ADMIN_EMAILS": "you@example.com"
+    "APP_BASE_URL": "https://geo-growth-os.cimamillicent540.workers.dev",
+    "GEO_ADMIN_EMAILS": "cimamillicent540@gmail.com"
   },
   "observability": {
     "enabled": true
