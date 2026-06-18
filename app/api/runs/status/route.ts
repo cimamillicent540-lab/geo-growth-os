@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiAuth, requireClientInAgency } from '@/lib/auth';
+import { buildRunStatus } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export async function GET(req: Request) {
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
   const supabase = supabaseAdmin();
   const { data: run } = await supabase
     .from('geo_runs')
-    .select('id, client_id, status, total_queries, processed_queries, error_message')
+    .select('id, client_id, status, total_queries, processed_queries, error_message, started_at, created_at')
     .eq('id', runId)
     .single();
 
@@ -22,5 +23,5 @@ export async function GET(req: Request) {
   const clientResult = await requireClientInAgency(auth, run.client_id);
   if (clientResult.error) return clientResult.error;
 
-  return NextResponse.json(run);
+  return NextResponse.json(await buildRunStatus(run));
 }

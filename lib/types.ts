@@ -53,6 +53,9 @@ export type GeoRun = {
   total_queries: number;
   processed_queries: number;
   created_at: string;
+  is_stalled?: boolean;
+  can_resume?: boolean;
+  last_progress_at?: string | null;
 };
 
 export type GeoAnswer = {

@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
 import { compliancePrompt, normalizeContentType, normalizePriority, scoreInsight } from '@/lib/geo';
 import { normalizeCompetitors } from '@/lib/normalize';
-import { jsonCompletion, OPENAI_MODEL, textCompletion } from '@/lib/openai';
+import { describeOpenAIError, jsonCompletion, OPENAI_MODEL, textCompletion } from '@/lib/openai';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const maxDuration = 60;
+
+const BATCH_SIZE = 3;
+const ANSWER_TIMEOUT_MS = 8000;
+const ANALYSIS_TIMEOUT_MS = 6000;
+const INSIGHT_TIMEOUT_MS = 12000;
 
 type Analysis = {
   brand_mentioned?: boolean;
@@ -56,71 +61,75 @@ export async function POST(req: Request) {
 
   const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
   const supabase = supabaseAdmin();
-  const { data: run } = await supabase
-    .from('geo_runs')
-    .select('*, clients(*)')
-    .eq('id', run_id)
-    .single();
-
-  if (!run) return NextResponse.json({ error: 'run not found' }, { status: 404 });
-  if (run.status === 'completed' || run.status === 'failed') return NextResponse.json({ ok: true, status: run.status });
-
-  const client = Array.isArray(run.clients) ? run.clients[0] : run.clients;
-  if (!client) return NextResponse.json({ error: 'client not found' }, { status: 404 });
-
-  await supabase
-    .from('geo_runs')
-    .update({ status: 'running', started_at: run.started_at || new Date().toISOString(), error_message: null })
-    .eq('id', run_id);
 
   try {
-    const { data: existingAnswers } = await supabase
-      .from('geo_answers')
-      .select('query_id')
-      .eq('run_id', run_id);
-    const completedQueryIds = new Set((existingAnswers || []).map((answer) => answer.query_id).filter(Boolean));
+    const context = await loadRunContext(supabase, run_id);
+    if ('response' in context) return context.response;
 
-    const { data: queries } = await supabase
-      .from('geo_queries')
-      .select('*')
-      .eq('client_id', client.id)
-      .eq('agency_id', run.agency_id)
-      .order('priority', { ascending: false })
-      .order('created_at', { ascending: true })
-      .limit(Number(run.total_queries || 20));
+    const { run, client, queries, completedQueryIds } = context;
+    if (run.status === 'completed') return NextResponse.json({ ok: true, status: 'completed' });
 
-    const nextQuery = (queries || []).find((query) => !completedQueryIds.has(query.id));
-
-    if (nextQuery) {
-      await processOneQuery({
-        supabase,
-        run,
-        client,
-        query: nextQuery,
-        processedCount: completedQueryIds.size + 1
-      });
-
-      const nextProcessed = completedQueryIds.size + 1;
-      if (nextProcessed < Number(run.total_queries || queries?.length || 0)) {
-        dispatchNext(baseUrl, workerSecret, run_id);
-        return NextResponse.json({ ok: true, status: 'running', processed: nextProcessed });
-      }
-    }
-
-    await finalizeRun({ supabase, run, client });
-    return NextResponse.json({ ok: true, status: 'completed' });
-  } catch (error) {
     await supabase
       .from('geo_runs')
       .update({
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error_message: error instanceof Error ? error.message : 'Unknown worker error'
+        status: 'running',
+        started_at: run.started_at || new Date().toISOString(),
+        error_message: null
       })
       .eq('id', run_id);
 
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Unknown worker error' }, { status: 500 });
+    const pendingQueries = queries.filter((query) => !completedQueryIds.has(query.id)).slice(0, BATCH_SIZE);
+
+    for (const query of pendingQueries) {
+      await processOneQuerySafely({ supabase, run, client, query });
+    }
+
+    const processedCount = await syncProcessedCount(supabase, run_id);
+    const totalQueries = Number(run.total_queries || queries.length || 0);
+
+    if (processedCount >= totalQueries || pendingQueries.length === 0) {
+      await finalizeRun({ supabase, run: { ...run, total_queries: totalQueries }, client });
+      return NextResponse.json({ ok: true, status: 'completed', processed: processedCount, total: totalQueries });
+    }
+
+    dispatchNext(baseUrl, workerSecret, run_id);
+    return NextResponse.json({ ok: true, status: 'running', processed: processedCount, total: totalQueries });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown worker error';
+    await markRunFailed(supabase, run_id, message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+async function loadRunContext(supabase: ReturnType<typeof supabaseAdmin>, runId: string) {
+  const { data: run } = await supabase
+    .from('geo_runs')
+    .select('*, clients(*)')
+    .eq('id', runId)
+    .single();
+
+  if (!run) return { response: NextResponse.json({ error: 'run not found' }, { status: 404 }) };
+
+  const client = Array.isArray(run.clients) ? run.clients[0] : run.clients;
+  if (!client) return { response: NextResponse.json({ error: 'client not found' }, { status: 404 }) };
+
+  const { data: existingAnswers } = await supabase
+    .from('geo_answers')
+    .select('query_id')
+    .eq('run_id', runId)
+    .not('query_id', 'is', null);
+  const completedQueryIds = new Set((existingAnswers || []).map((answer) => answer.query_id).filter(Boolean));
+
+  const { data: queries } = await supabase
+    .from('geo_queries')
+    .select('*')
+    .eq('client_id', client.id)
+    .eq('agency_id', run.agency_id)
+    .order('priority', { ascending: false })
+    .order('created_at', { ascending: true })
+    .limit(Number(run.total_queries || 20));
+
+  return { run, client, queries: queries || [], completedQueryIds };
 }
 
 function dispatchNext(baseUrl: string, workerSecret: string, runId: string) {
@@ -134,18 +143,49 @@ function dispatchNext(baseUrl: string, workerSecret: string, runId: string) {
   }).catch(() => {});
 }
 
-async function processOneQuery({
+async function processOneQuerySafely({
   supabase,
   run,
   client,
-  query,
-  processedCount
+  query
 }: {
   supabase: ReturnType<typeof supabaseAdmin>;
   run: any;
   client: any;
   query: any;
-  processedCount: number;
+}) {
+  const { data: existingAnswer } = await supabase
+    .from('geo_answers')
+    .select('id')
+    .eq('run_id', run.id)
+    .eq('query_id', query.id)
+    .maybeSingle();
+
+  if (existingAnswer) {
+    await syncProcessedCount(supabase, run.id);
+    return;
+  }
+
+  try {
+    await processOneQuery({ supabase, run, client, query });
+  } catch (error) {
+    const message = describeOpenAIError(error);
+    await insertFallbackAnswer({ supabase, run, client, query, message });
+  } finally {
+    await syncProcessedCount(supabase, run.id);
+  }
+}
+
+async function processOneQuery({
+  supabase,
+  run,
+  client,
+  query
+}: {
+  supabase: ReturnType<typeof supabaseAdmin>;
+  run: any;
+  client: any;
+  query: any;
 }) {
   const knownCompetitors: string[] = client.competitors || [];
   const answerSystem = [
@@ -158,7 +198,8 @@ async function processOneQuery({
     answerSystem,
     `User country: ${client.target_country}
 Preferred language: ${client.target_language}
-Question: ${query.query_text}`
+Question: ${query.query_text}`,
+    { timeoutMs: ANSWER_TIMEOUT_MS, maxTokens: 800 }
   );
 
   const analysis = await jsonCompletion<Analysis>(
@@ -170,10 +211,11 @@ Answer:
 ${answer}
 
 Return JSON exactly as:
-{"brand_mentioned":true,"brand_position":1,"competitors_mentioned":["..."],"sentiment":"positive|neutral|negative|mixed","recommendation_status":"recommended|mentioned_only|not_mentioned|competitor_recommended","citations":[],"content_gap":"...","risk_notes":["..."]}`
+{"brand_mentioned":true,"brand_position":1,"competitors_mentioned":["..."],"sentiment":"positive|neutral|negative|mixed","recommendation_status":"recommended|mentioned_only|not_mentioned|competitor_recommended","citations":[],"content_gap":"...","risk_notes":["..."]}`,
+    { timeoutMs: ANALYSIS_TIMEOUT_MS, maxTokens: 700 }
   );
 
-  const row = {
+  const { error: answerError } = await supabase.from('geo_answers').insert({
     run_id: run.id,
     client_id: client.id,
     agency_id: run.agency_id,
@@ -192,15 +234,61 @@ Return JSON exactly as:
     citations: Array.isArray(analysis.citations) ? analysis.citations : [],
     content_gap: analysis.content_gap || null,
     risk_notes: Array.isArray(analysis.risk_notes) ? analysis.risk_notes : []
-  };
+  });
 
-  const { error: answerError } = await supabase.from('geo_answers').insert(row);
   if (answerError) throw answerError;
+}
+
+async function insertFallbackAnswer({
+  supabase,
+  run,
+  client,
+  query,
+  message
+}: {
+  supabase: ReturnType<typeof supabaseAdmin>;
+  run: any;
+  client: any;
+  query: any;
+  message: string;
+}) {
+  const { error } = await supabase.from('geo_answers').insert({
+    run_id: run.id,
+    client_id: client.id,
+    agency_id: run.agency_id,
+    query_id: query.id,
+    model_provider: 'openai',
+    model_name: OPENAI_MODEL,
+    answer_text: `Worker could not complete this query. ${message}`,
+    brand_mentioned: false,
+    brand_position: null,
+    competitors_mentioned: [],
+    sentiment: 'neutral',
+    recommendation_status: 'not_mentioned',
+    citations: [],
+    content_gap: `Worker error: ${message}`,
+    risk_notes: [message]
+  });
+
+  if (error) throw error;
 
   await supabase
     .from('geo_runs')
-    .update({ processed_queries: processedCount })
+    .update({ error_message: `Some questions failed and were recorded as neutral: ${message}` })
     .eq('id', run.id);
+}
+
+async function syncProcessedCount(supabase: ReturnType<typeof supabaseAdmin>, runId: string) {
+  const { count } = await supabase
+    .from('geo_answers')
+    .select('id', { count: 'exact', head: true })
+    .eq('run_id', runId);
+  const processed = count || 0;
+  await supabase
+    .from('geo_runs')
+    .update({ processed_queries: processed })
+    .eq('id', runId);
+  return processed;
 }
 
 async function finalizeRun({
@@ -233,25 +321,7 @@ async function finalizeRun({
   const visibilityScore = scoreInsight(savedAnswers);
   const mentionRate = savedAnswers.filter((answer) => answer.brand_mentioned).length / Math.max(savedAnswers.length, 1);
   const recommendationRate = savedAnswers.filter((answer) => answer.recommendation_status === 'recommended').length / Math.max(savedAnswers.length, 1);
-
-  const insight = await jsonCompletion<InsightResult>(
-    ['You are a senior GEO strategist creating a client-ready report.', 'Return strict JSON only.', compliancePrompt(client)].join(' '),
-    `Client:
-${JSON.stringify(client)}
-
-Run answer analysis:
-${JSON.stringify(savedAnswers.map((answer) => ({
-  brand_mentioned: answer.brand_mentioned,
-  competitors_mentioned: answer.competitors_mentioned,
-  sentiment: answer.sentiment,
-  recommendation_status: answer.recommendation_status,
-  content_gap: answer.content_gap,
-  risk_notes: answer.risk_notes
-}))).slice(0, 14000)}
-
-Create concise JSON:
-{"executive_summary":"...","competitor_summary":[{"name":"...","mentions":3,"notes":"..."}],"sentiment_summary":{"positive":0,"neutral":0,"negative":0,"mixed":0,"notes":"..."},"content_gaps":["..."],"action_plan":["..."],"risk_notes":["..."],"content_tasks":[{"title":"...","content_type":"faq|comparison_page|blog|landing_page|third_party_review|reddit_quora_answer|ad_creative_angle","target_query":"...","priority":1,"brief":"..."}]}`
-  );
+  const insight = await buildInsight(client, savedAnswers);
 
   const { data: existingInsight } = await supabase
     .from('geo_insights')
@@ -278,37 +348,142 @@ Create concise JSON:
     if (insightError) throw insightError;
   }
 
-  const { data: existingTasks } = await supabase
-    .from('content_tasks')
-    .select('id')
-    .eq('run_id', run.id)
-    .limit(1);
-
-  if (!existingTasks?.length) {
-    const tasks = (insight.content_tasks || []).slice(0, 20).map((task) => ({
-      client_id: client.id,
-      agency_id: run.agency_id,
-      run_id: run.id,
-      title: String(task.title || 'Content task').trim(),
-      content_type: normalizeContentType(task.content_type),
-      target_query: task.target_query || null,
-      priority: normalizePriority(task.priority),
-      status: 'todo',
-      brief: task.brief || ''
-    }));
-
-    if (tasks.length) {
-      const { error: taskError } = await supabase.from('content_tasks').insert(tasks);
-      if (taskError) throw taskError;
-    }
-  }
+  await ensureContentTasks({ supabase, run, client, insight, savedAnswers });
 
   await supabase
     .from('geo_runs')
     .update({
       status: 'completed',
       completed_at: new Date().toISOString(),
-      processed_queries: savedAnswers.length
+      processed_queries: Math.max(savedAnswers.length, Number(run.total_queries || 0))
     })
     .eq('id', run.id);
+}
+
+async function buildInsight(client: any, savedAnswers: SavedAnswer[]): Promise<InsightResult> {
+  try {
+    return await jsonCompletion<InsightResult>(
+      ['You are a senior GEO strategist creating a client-ready report.', 'Return strict JSON only.', compliancePrompt(client)].join(' '),
+      `Client:
+${JSON.stringify(client)}
+
+Run answer analysis:
+${JSON.stringify(savedAnswers.map((answer) => ({
+  brand_mentioned: answer.brand_mentioned,
+  competitors_mentioned: answer.competitors_mentioned,
+  sentiment: answer.sentiment,
+  recommendation_status: answer.recommendation_status,
+  content_gap: answer.content_gap,
+  risk_notes: answer.risk_notes
+}))).slice(0, 12000)}
+
+Create concise JSON:
+{"executive_summary":"...","competitor_summary":[{"name":"...","mentions":3,"notes":"..."}],"sentiment_summary":{"positive":0,"neutral":0,"negative":0,"mixed":0,"notes":"..."},"content_gaps":["..."],"action_plan":["..."],"risk_notes":["..."],"content_tasks":[{"title":"...","content_type":"faq|comparison_page|blog|landing_page|third_party_review|reddit_quora_answer|ad_creative_angle","target_query":"...","priority":1,"brief":"..."}]}`,
+      { timeoutMs: INSIGHT_TIMEOUT_MS, maxTokens: 2500 }
+    );
+  } catch (error) {
+    const gaps = savedAnswers.map((answer) => answer.content_gap).filter(Boolean).slice(0, 8) as string[];
+    return {
+      executive_summary: 'The run completed with automated fallback reporting because the insight generation request failed.',
+      competitor_summary: summarizeCompetitors(savedAnswers),
+      sentiment_summary: summarizeSentiment(savedAnswers),
+      content_gaps: gaps.length ? gaps : ['Create clearer category, trust, comparison, and risk-disclosure content for AI answer coverage.'],
+      action_plan: ['Publish trust and safety FAQ content.', 'Create competitor comparison pages.', 'Add clearer fee, withdrawal, and risk disclosure pages.'],
+      risk_notes: [`Insight generation fallback: ${describeOpenAIError(error)}`],
+      content_tasks: buildFallbackTasks(savedAnswers)
+    };
+  }
+}
+
+async function ensureContentTasks({
+  supabase,
+  run,
+  client,
+  insight,
+  savedAnswers
+}: {
+  supabase: ReturnType<typeof supabaseAdmin>;
+  run: any;
+  client: any;
+  insight: InsightResult;
+  savedAnswers: SavedAnswer[];
+}) {
+  const { data: existingTasks } = await supabase
+    .from('content_tasks')
+    .select('id')
+    .eq('run_id', run.id)
+    .limit(1);
+
+  if (existingTasks?.length) return;
+
+  const sourceTasks = insight.content_tasks?.length ? insight.content_tasks : buildFallbackTasks(savedAnswers);
+  const tasks = sourceTasks.slice(0, 20).map((task) => ({
+    client_id: client.id,
+    agency_id: run.agency_id,
+    run_id: run.id,
+    title: String(task.title || 'Content task').trim(),
+    content_type: normalizeContentType(task.content_type),
+    target_query: task.target_query || null,
+    priority: normalizePriority(task.priority),
+    status: 'todo',
+    brief: task.brief || ''
+  }));
+
+  if (tasks.length) {
+    const { error: taskError } = await supabase.from('content_tasks').insert(tasks);
+    if (taskError) throw taskError;
+  }
+}
+
+function summarizeCompetitors(savedAnswers: SavedAnswer[]) {
+  const counts: Record<string, number> = {};
+  savedAnswers.forEach((answer) => answer.competitors_mentioned.forEach((name) => { counts[name] = (counts[name] || 0) + 1; }));
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, mentions]) => ({ name, mentions, notes: 'Mentioned by AI answers during this run.' }));
+}
+
+function summarizeSentiment(savedAnswers: SavedAnswer[]) {
+  return savedAnswers.reduce<Record<string, number>>((summary, answer) => {
+    summary[answer.sentiment] = (summary[answer.sentiment] || 0) + 1;
+    return summary;
+  }, { positive: 0, neutral: 0, negative: 0, mixed: 0 });
+}
+
+function buildFallbackTasks(savedAnswers: SavedAnswer[]) {
+  const targetQuery = savedAnswers.find((answer) => answer.content_gap)?.query_id || null;
+  return [
+    {
+      title: 'Build a trust and safety FAQ',
+      content_type: 'faq',
+      target_query: targetQuery || '',
+      priority: 1,
+      brief: 'Answer common AI-search trust questions with clear compliance-safe language.'
+    },
+    {
+      title: 'Publish a competitor comparison page',
+      content_type: 'comparison_page',
+      target_query: targetQuery || '',
+      priority: 2,
+      brief: 'Compare the brand against top competitors using factual, non-misleading claims.'
+    },
+    {
+      title: 'Create a fees, withdrawal, and risk guide',
+      content_type: 'blog',
+      target_query: targetQuery || '',
+      priority: 2,
+      brief: 'Clarify fees, withdrawal expectations, security practices, and risk disclosures.'
+    }
+  ];
+}
+
+async function markRunFailed(supabase: ReturnType<typeof supabaseAdmin>, runId: string, message: string) {
+  await supabase
+    .from('geo_runs')
+    .update({
+      status: 'failed',
+      completed_at: new Date().toISOString(),
+      error_message: message
+    })
+    .eq('id', runId);
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { forbidden, hasAgencyOperatorAccess, hasRole, requireApiAuth, requireClientInAgency } from '@/lib/auth';
+import { dispatchWorker } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -27,6 +28,31 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: 'Generate GEO queries before running a test.' }, { status: 400 });
   }
 
+  const { data: existingRuns } = await supabase
+    .from('geo_runs')
+    .select('*')
+    .eq('client_id', id)
+    .eq('agency_id', client.agency_id)
+    .in('status', ['pending', 'running', 'failed'])
+    .order('created_at', { ascending: false })
+    .limit(5);
+  const resumableRun = (existingRuns || []).find((run) => Number(run.processed_queries || 0) < Number(run.total_queries || 0));
+  if (resumableRun) {
+    const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+    await supabase
+      .from('geo_runs')
+      .update({ status: 'running', error_message: null })
+      .eq('id', resumableRun.id);
+    await dispatchWorker(resumableRun.id, baseUrl);
+    return NextResponse.json({
+      run_id: resumableRun.id,
+      share_token: resumableRun.share_token,
+      queued: true,
+      resumed: true,
+      total_queries: resumableRun.total_queries
+    });
+  }
+
   const { data: run, error: runError } = await supabase
     .from('geo_runs')
     .insert({
@@ -45,8 +71,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: runError?.message || 'Could not create run' }, { status: 500 });
   }
 
-  const workerSecret = process.env.INTERNAL_WORKER_SECRET || process.env.WORKER_SECRET;
-  if (!workerSecret) {
+  if (!process.env.INTERNAL_WORKER_SECRET && !process.env.WORKER_SECRET) {
     await supabase
       .from('geo_runs')
       .update({ status: 'failed', error_message: 'Missing INTERNAL_WORKER_SECRET' })
@@ -55,14 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
-  fetch(`${baseUrl}/api/runs/worker`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-worker-secret': workerSecret
-    },
-    body: JSON.stringify({ run_id: run.id })
-  }).catch(async (error) => {
+  dispatchWorker(run.id, baseUrl).catch(async (error) => {
     await supabase
       .from('geo_runs')
       .update({ status: 'failed', error_message: error instanceof Error ? error.message : 'Worker dispatch failed' })

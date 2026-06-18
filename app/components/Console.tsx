@@ -623,6 +623,8 @@ export function QueriesPage({ clientId }: { clientId: string }) {
 export function RunResultPage({ clientId, runId }: { clientId: string; runId: string }) {
   const supabase = useSupabase();
   const [data, setData] = useState<{ run: GeoRun | null; insight: GeoInsight | null; answers: Array<GeoAnswer & { geo_queries?: GeoQuery }> }>({ run: null, insight: null, answers: [] });
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   useEffect(() => {
     let stop = false;
@@ -649,7 +651,7 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
       if (!response.ok || stop) return;
       const nextRun = await response.json();
       setData((current) => ({ ...current, run: { ...(current.run || {}), ...nextRun } as GeoRun }));
-      if (nextRun.status === 'completed' || nextRun.status === 'failed') {
+      if (nextRun.status === 'completed') {
         clearInterval(interval);
         await load();
       }
@@ -659,6 +661,30 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
       clearInterval(interval);
     };
   }, [clientId, runId, supabase]);
+
+  async function resumeRun() {
+    setResumeBusy(true);
+    setResumeError(null);
+    try {
+      const token = await getToken(supabase);
+      if (!token) throw new Error('Missing login session. Please sign in again.');
+      const response = await fetch(`/api/runs/${runId}/resume`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+        cache: 'no-store'
+      });
+      const result = await parseActionResponse(response);
+      if (!response.ok) throw new Error(result.error || 'Could not resume run.');
+      setData((current) => ({
+        ...current,
+        run: current.run ? { ...current.run, status: 'running', error_message: null, is_stalled: false, can_resume: false } : current.run
+      }));
+    } catch (error) {
+      setResumeError(error instanceof Error ? error.message : 'Could not resume run.');
+    } finally {
+      setResumeBusy(false);
+    }
+  }
 
   const competitorCounts: Record<string, number> = {};
   data.answers.forEach((answer) => answer.competitors_mentioned.forEach((name) => { competitorCounts[name] = (competitorCounts[name] || 0) + 1; }));
@@ -672,6 +698,7 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
         </div>
         <div className="actions">
           <Link className="btn" href={`/clients/${clientId}`}>Back to Client</Link>
+          {data.run?.can_resume && <button className="btn" disabled={resumeBusy} onClick={resumeRun}>{resumeBusy ? 'Resuming...' : 'Resume Run'}</button>}
           {data.run?.status === 'completed' && <Link className="btn primary" href={`/clients/${clientId}/reports/${runId}`}>View Report</Link>}
         </div>
       </div>
@@ -689,7 +716,19 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
           <p className="muted">{data.run.processed_queries} / {data.run.total_queries} questions processed. This page refreshes automatically.</p>
         </div>
       )}
-      {data.run?.status === 'failed' && <div className="empty dangerText section">{data.run.error_message || 'Run failed.'}</div>}
+      {data.run?.is_stalled && (
+        <div className="empty dangerText section">
+          Run appears stalled. Resume the worker to continue from the next unanswered question.
+          <div className="section actions"><button className="btn primary" disabled={resumeBusy} onClick={resumeRun}>{resumeBusy ? 'Resuming...' : 'Resume Run'}</button></div>
+        </div>
+      )}
+      {data.run?.status === 'failed' && (
+        <div className="empty dangerText section">
+          {data.run.error_message || 'Run failed.'}
+          {data.run.can_resume && <div className="section actions"><button className="btn primary" disabled={resumeBusy} onClick={resumeRun}>{resumeBusy ? 'Retrying...' : 'Retry Run'}</button></div>}
+        </div>
+      )}
+      {resumeError && <div className="empty dangerText section">{resumeError}</div>}
       <div className="card section">
         <h2>Competitor Mentions</h2>
         <p>{Object.entries(competitorCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}: ${count}`).join(' | ') || 'No competitor pressure detected yet.'}</p>

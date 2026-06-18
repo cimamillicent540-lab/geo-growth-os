@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { requireApiAuth, requireClientInAgency } from '@/lib/auth';
-import { buildRunStatus } from '@/lib/runWorker';
+import { dispatchWorker } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
-export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiAuth(req);
   if (auth instanceof NextResponse) return auth;
 
@@ -11,7 +11,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const supabase = supabaseAdmin();
   const { data: run } = await supabase
     .from('geo_runs')
-    .select('id, client_id, status, total_queries, processed_queries, error_message, started_at, created_at')
+    .select('id, client_id, status, total_queries, processed_queries')
     .eq('id', id)
     .single();
 
@@ -20,5 +20,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const clientResult = await requireClientInAgency(auth, run.client_id);
   if (clientResult.error) return clientResult.error;
 
-  return NextResponse.json(await buildRunStatus(run));
+  if (run.status === 'completed') {
+    return NextResponse.json({ ok: true, status: 'completed' });
+  }
+
+  const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+  await supabase
+    .from('geo_runs')
+    .update({ status: 'running', error_message: null })
+    .eq('id', id);
+
+  await dispatchWorker(id, baseUrl);
+  return NextResponse.json({ ok: true, status: 'running' });
 }
