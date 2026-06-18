@@ -9,7 +9,8 @@
     "deploy:cloudflare": "wrangler deploy --keep-vars",
     "preview:cloudflare": "opennextjs-cloudflare build && wrangler dev",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/ssr": "latest",
