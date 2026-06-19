@@ -3,6 +3,7 @@ import { getEnv } from '@/lib/env';
 import { compliancePrompt, normalizeContentType, normalizePriority, scoreInsight } from '@/lib/geo';
 import { normalizeCompetitors } from '@/lib/normalize';
 import { describeOpenAIError, jsonCompletion, openAIModel, textCompletion } from '@/lib/openai';
+import { dispatchWorker } from '@/lib/runWorker';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const maxDuration = 60;
@@ -93,7 +94,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, status: 'completed', processed: processedCount, total: totalQueries });
     }
 
-    dispatchNext(baseUrl, workerSecret, run_id);
+    await dispatchWorker(run_id, baseUrl, {
+      background: true,
+      onError: (error) => markRunFailed(supabase, run_id, error instanceof Error ? error.message : 'Worker dispatch failed')
+    });
     return NextResponse.json({ ok: true, status: 'running', processed: processedCount, total: totalQueries });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown worker error';
@@ -131,17 +135,6 @@ async function loadRunContext(supabase: ReturnType<typeof supabaseAdmin>, runId:
     .limit(Number(run.total_queries || 20));
 
   return { run, client, queries: queries || [], completedQueryIds };
-}
-
-function dispatchNext(baseUrl: string, workerSecret: string, runId: string) {
-  fetch(`${baseUrl}/api/runs/worker`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-worker-secret': workerSecret
-    },
-    body: JSON.stringify({ run_id: runId })
-  }).catch(() => {});
 }
 
 async function processOneQuerySafely({

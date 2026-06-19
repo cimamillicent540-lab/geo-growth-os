@@ -1,3 +1,4 @@
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { getEnv } from '@/lib/env';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
@@ -11,6 +12,15 @@ type RunForStatus = {
   error_message: string | null;
   started_at?: string | null;
   created_at?: string | null;
+};
+
+type BackgroundDispatchOptions = {
+  background?: boolean;
+  onError?: (error: unknown) => Promise<void> | void;
+};
+
+type WaitUntilContext = {
+  waitUntil: (promise: Promise<unknown>) => void;
 };
 
 export async function buildRunStatus(run: RunForStatus) {
@@ -43,7 +53,25 @@ export async function buildRunStatus(run: RunForStatus) {
   };
 }
 
-export async function dispatchWorker(runId: string, baseUrl: string) {
+export async function dispatchWorker(runId: string, baseUrl: string, options: BackgroundDispatchOptions = {}) {
+  const request = sendWorkerDispatch(runId, baseUrl);
+
+  if (!options.background) {
+    return request;
+  }
+
+  const guardedRequest = request.catch(async (error) => {
+    if (options.onError) {
+      await options.onError(error);
+      return;
+    }
+    throw error;
+  });
+
+  await waitUntilOrAwait(guardedRequest);
+}
+
+async function sendWorkerDispatch(runId: string, baseUrl: string) {
   const workerSecret = getEnv('INTERNAL_WORKER_SECRET') || getEnv('WORKER_SECRET');
   if (!workerSecret) {
     throw new Error('Missing INTERNAL_WORKER_SECRET');
@@ -64,4 +92,25 @@ export async function dispatchWorker(runId: string, baseUrl: string) {
   }
 
   return response.json();
+}
+
+async function waitUntilOrAwait(promise: Promise<unknown>) {
+  const context = currentWaitUntilContext();
+  if (context) {
+    context.waitUntil(promise);
+    return;
+  }
+
+  await promise;
+}
+
+function currentWaitUntilContext(): WaitUntilContext | null {
+  try {
+    const context = getCloudflareContext().ctx as WaitUntilContext | undefined;
+    if (context && typeof context.waitUntil === 'function') return context;
+  } catch {
+    // Local Next.js development does not always provide a Cloudflare execution context.
+  }
+
+  return null;
 }
