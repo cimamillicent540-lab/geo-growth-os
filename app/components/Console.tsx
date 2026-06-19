@@ -921,22 +921,38 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
 
 export function ReportPageClient({ clientId, runId }: { clientId: string; runId: string }) {
   const supabase = useSupabase();
-  const [data, setData] = useState<{ client: Client | null; run: GeoRun | null; insight: GeoInsight | null; answers: Array<GeoAnswer & { geo_queries?: GeoQuery }>; tasks: ContentTask[] }>({ client: null, run: null, insight: null, answers: [], tasks: [] });
+  const [data, setData] = useState<{
+    client: Client | null;
+    run: GeoRun | null;
+    insight: GeoInsight | null;
+    answers: Array<GeoAnswer & { geo_queries?: GeoQuery }>;
+    tasks: ContentTask[];
+    profile: UserProfile | null;
+  }>({ client: null, run: null, insight: null, answers: [], tasks: [], profile: null });
 
   useEffect(() => {
     async function load() {
       if (!supabaseConfigured()) {
-        setData({ client: null, run: null, insight: null, answers: [], tasks: [] });
+        setData({ client: null, run: null, insight: null, answers: [], tasks: [], profile: null });
         return;
       }
-      const [{ data: client }, { data: run }, { data: insight }, { data: answers }, { data: tasks }] = await Promise.all([
+      const { data: userData } = await supabase.auth.getUser();
+      const [{ data: profile }, { data: client }, { data: run }, { data: insight }, { data: answers }, { data: tasks }] = await Promise.all([
+        supabase.from('user_profiles').select('*').eq('user_id', userData.user?.id || '').maybeSingle(),
         supabase.from('clients').select('*').eq('id', clientId).single(),
         supabase.from('geo_runs').select('*').eq('id', runId).eq('client_id', clientId).single(),
         supabase.from('geo_insights').select('*').eq('run_id', runId).maybeSingle(),
         supabase.from('geo_answers').select('*, geo_queries(*)').eq('run_id', runId).limit(50),
         supabase.from('content_tasks').select('*').eq('run_id', runId).order('priority', { ascending: true })
       ]);
-      setData({ client: (client as Client | null) || null, run: (run as GeoRun | null) || null, insight: (insight as GeoInsight | null) || null, answers: (answers as Array<GeoAnswer & { geo_queries?: GeoQuery }>) || [], tasks: (tasks as ContentTask[]) || [] });
+      setData({
+        profile: (profile as UserProfile | null) || null,
+        client: (client as Client | null) || null,
+        run: (run as GeoRun | null) || null,
+        insight: (insight as GeoInsight | null) || null,
+        answers: (answers as Array<GeoAnswer & { geo_queries?: GeoQuery }>) || [],
+        tasks: (tasks as ContentTask[]) || []
+      });
     }
     load();
   }, [clientId, runId, supabase]);
@@ -953,9 +969,121 @@ export function ReportPageClient({ clientId, runId }: { clientId: string; runId:
         answers={data.answers}
         tasks={data.tasks}
         shareUrl={shareUrl}
+        canViewDebug={data.profile?.role === 'admin' || data.profile?.role === 'strategist'}
       />
     </AuthGate>
   );
+}
+
+type CompetitorReportItem = {
+  name: string;
+  mentions: number;
+  notes: string;
+};
+
+function stringifyReportValue(value: unknown) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return '';
+}
+
+function normalizeCompetitorSummary(insight: GeoInsight, answers: Array<GeoAnswer & { geo_queries?: GeoQuery }>) {
+  const raw = Array.isArray(insight.competitor_summary) ? insight.competitor_summary : [];
+  const fromInsight = raw
+    .map((item): CompetitorReportItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const name = stringifyReportValue(record.name || record.competitor || record.brand).trim();
+      if (!name) return null;
+      return {
+        name,
+        mentions: Number(record.mentions || record.count || 0),
+        notes: stringifyReportValue(record.notes || record.summary || 'Mentioned in AI answers.')
+      };
+    })
+    .filter((item): item is CompetitorReportItem => Boolean(item));
+
+  if (fromInsight.length) return fromInsight.sort((a, b) => b.mentions - a.mentions);
+
+  const counts: Record<string, number> = {};
+  answers.forEach((answer) => answer.competitors_mentioned.forEach((name) => { counts[name] = (counts[name] || 0) + 1; }));
+  return Object.entries(counts)
+    .map(([name, mentions]) => ({ name, mentions, notes: 'Mentioned in AI answers during this run.' }))
+    .sort((a, b) => b.mentions - a.mentions);
+}
+
+function priorityGroup(priority: number) {
+  if (priority <= 2) return 'High';
+  if (priority === 3) return 'Medium';
+  return 'Low';
+}
+
+function groupedRecommendations(tasks: ContentTask[], insight: GeoInsight) {
+  const groups: Record<string, Array<{ title: string; brief: string; priority?: number }>> = { High: [], Medium: [], Low: [] };
+  if (tasks.length) {
+    tasks.forEach((task) => {
+      groups[priorityGroup(Number(task.priority || 3))].push({
+        title: task.title,
+        brief: task.brief || task.target_query || '',
+        priority: task.priority
+      });
+    });
+    return groups;
+  }
+
+  jsonList(insight.action_plan).forEach((item) => groups.Medium.push({ title: item, brief: '' }));
+  return groups;
+}
+
+function buildExecutiveSummaryMarkdown(client: Client, run: GeoRun, insight: GeoInsight) {
+  return [
+    `# ${client.name} GEO Report`,
+    '',
+    `Run: ${run.run_name}`,
+    `Status: ${run.status}`,
+    `AI Visibility Score: ${Math.round(Number(insight.visibility_score || 0))}`,
+    `Mention Rate: ${percent(Number(insight.mention_rate || 0))}`,
+    `Recommendation Rate: ${percent(Number(insight.recommendation_rate || 0))}`,
+    '',
+    '## Executive Summary',
+    insight.executive_summary || 'No executive summary generated.'
+  ].join('\n');
+}
+
+function buildFullReportMarkdown({
+  client,
+  run,
+  insight,
+  competitors,
+  gaps,
+  recommendations
+}: {
+  client: Client;
+  run: GeoRun;
+  insight: GeoInsight;
+  competitors: CompetitorReportItem[];
+  gaps: string[];
+  recommendations: Record<string, Array<{ title: string; brief: string; priority?: number }>>;
+}) {
+  const lines = [
+    buildExecutiveSummaryMarkdown(client, run, insight),
+    '',
+    '## Competitor Mentions',
+    ...(competitors.length ? competitors.map((item) => `- ${item.name}: ${item.mentions} mentions. ${item.notes}`) : ['- No competitor mentions recorded.']),
+    '',
+    '## Content Gaps',
+    ...(gaps.length ? gaps.map((gap) => `- ${gap}`) : ['- No content gaps recorded.']),
+    '',
+    '## Recommendations'
+  ];
+
+  Object.entries(recommendations).forEach(([group, items]) => {
+    if (!items.length) return;
+    lines.push('', `### ${group} Priority`, ...items.map((item) => `- ${item.title}${item.brief ? `: ${item.brief}` : ''}`));
+  });
+
+  return lines.join('\n');
 }
 
 export function ReportView({
@@ -964,7 +1092,8 @@ export function ReportView({
   insight,
   answers,
   tasks,
-  shareUrl
+  shareUrl,
+  canViewDebug = false
 }: {
   client: Client | null;
   run: GeoRun | null;
@@ -972,89 +1101,149 @@ export function ReportView({
   answers: Array<GeoAnswer & { geo_queries?: GeoQuery }>;
   tasks: ContentTask[];
   shareUrl?: string;
+  canViewDebug?: boolean;
 }) {
-  const topCompetitors: Record<string, number> = {};
-  answers.forEach((answer) => answer.competitors_mentioned.forEach((name) => { topCompetitors[name] = (topCompetitors[name] || 0) + 1; }));
+  if (!client || !run) return <div className="empty">Report not ready.</div>;
+  if (!insight) {
+    return (
+      <div className="report">
+        <div className="hero reportHero">
+          <div>
+            <h1>{client.name} AI Visibility Report</h1>
+            <p className="muted">{run.run_name} | Status: {run.status}</p>
+          </div>
+        </div>
+        <div className="empty section">Insight is not ready yet. Open this report again after the run completes.</div>
+      </div>
+    );
+  }
 
-  if (!client || !run || !insight) return <div className="empty">Report not ready.</div>;
+  const competitors = normalizeCompetitorSummary(insight, answers);
+  const gaps = jsonList(insight.content_gaps);
+  const recommendations = groupedRecommendations(tasks, insight);
+  const summaryMarkdown = buildExecutiveSummaryMarkdown(client, run, insight);
+  const fullMarkdown = buildFullReportMarkdown({ client, run, insight, competitors, gaps, recommendations });
+  const runDate = run.completed_at || run.started_at || run.created_at;
 
   return (
     <div className="report">
-      <div className="hero reportHero">
+      <div className="hero reportHero reportHeader">
         <div>
           <h1>{client.name} AI Visibility Report</h1>
-          <p className="muted">{client.industry} | {client.target_country} | {client.target_language} | {run.run_name}</p>
-        </div>
-        <div className="scoreBox">
-          <div className="muted">AI Visibility Score</div>
-          <div className="score">{Math.round(Number(insight.visibility_score || 0))}</div>
+          <p className="muted">{run.run_name} | {formatDateTime(runDate)} | {client.industry} | {client.target_country} | {client.target_language}</p>
+          <div className="actions reportStatusLine">
+            <span className={`pill ${run.status === 'completed' ? 'ok' : run.status === 'failed' ? 'danger' : ''}`}>{run.status}</span>
+            <span className="pill">{answers.length} answers reviewed</span>
+          </div>
         </div>
       </div>
 
-      {shareUrl && (
-        <div className="actions noPrint section">
+      <div className="reportMetrics section">
+        <div>
+          <span className="muted">AI Visibility Score</span>
+          <strong>{Math.round(Number(insight.visibility_score || 0))}</strong>
+        </div>
+        <div>
+          <span className="muted">Mention Rate</span>
+          <strong>{percent(Number(insight.mention_rate || 0))}</strong>
+        </div>
+        <div>
+          <span className="muted">Recommendation Rate</span>
+          <strong>{percent(Number(insight.recommendation_rate || 0))}</strong>
+        </div>
+      </div>
+
+      <div className="actions noPrint section">
+        <button className="btn" onClick={() => navigator.clipboard.writeText(summaryMarkdown)}>Copy Executive Summary</button>
+        <button className="btn" onClick={() => navigator.clipboard.writeText(fullMarkdown)}>Copy Full Report</button>
+        {shareUrl && (
+          <>
           <button className="btn" onClick={() => navigator.clipboard.writeText(shareUrl)}>Copy Share Link</button>
-          <button className="btn" onClick={() => window.print()}>Print / Save PDF</button>
           <a className="btn" href={shareUrl} target="_blank">Open Public Report</a>
-        </div>
-      )}
-
-      <div className="grid section">
-        <Stat label="Brand Mention Rate" value={percent(Number(insight.mention_rate || 0))} />
-        <Stat label="Recommendation Rate" value={percent(Number(insight.recommendation_rate || 0))} />
-        <Stat label="Questions Tested" value={answers.length} />
+          </>
+        )}
+        <button className="btn primary" onClick={() => window.print()}>Print / Save PDF</button>
       </div>
 
-      <div className="card section">
+      <section className="reportSection section">
         <h2>Executive Summary</h2>
-        <p>{insight.executive_summary || 'No executive summary generated.'}</p>
-      </div>
+        <div className="summaryCard">
+          <p>{insight.executive_summary || 'No executive summary generated yet.'}</p>
+        </div>
+      </section>
 
-      <div className="row section">
-        <div className="card">
-          <h2>Top Competitors</h2>
-          <ul>{Object.entries(topCompetitors).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => <li key={name}>{name}: {count}</li>)}</ul>
+      <section className="reportSection section">
+        <h2>Competitor Mentions</h2>
+        <div className="reportCards">
+          {competitors.length ? competitors.map((competitor) => (
+            <div className="reportMiniCard" key={competitor.name}>
+              <div className="miniCardTop">
+                <strong>{competitor.name}</strong>
+                <span className="pill">{competitor.mentions} mentions</span>
+              </div>
+              <p className="muted">{competitor.notes}</p>
+            </div>
+          )) : <div className="empty">No competitor mentions recorded in this run.</div>}
         </div>
-        <div className="card">
-          <h2>Sentiment Summary</h2>
-          <pre className="pre">{JSON.stringify(insight.sentiment_summary || {}, null, 2)}</pre>
-        </div>
-      </div>
+      </section>
 
-      <div className="row section">
-        <div className="card">
-          <h2>Content Gaps</h2>
-          <ul>{jsonList(insight.content_gaps).map((item) => <li key={item}>{item}</li>)}</ul>
-        </div>
-        <div className="card">
-          <h2>Risk Notes</h2>
-          <ul>{jsonList(insight.risk_notes).map((item) => <li key={item}>{item}</li>)}</ul>
-        </div>
-      </div>
+      <section className="reportSection section">
+        <h2>Content Gaps</h2>
+        {gaps.length ? (
+          <ul className="reportList">{gaps.map((item) => <li key={item}>{item}</li>)}</ul>
+        ) : (
+          <div className="empty">No content gaps were generated for this report.</div>
+        )}
+      </section>
 
-      <div className="card section">
-        <h2>Next Action Plan</h2>
-        <ol>{jsonList(insight.action_plan).map((item) => <li key={item}>{item}</li>)}</ol>
-      </div>
+      <section className="reportSection section">
+        <h2>Recommendations</h2>
+        <div className="recommendationGroups">
+          {Object.entries(recommendations).map(([group, items]) => (
+            <div className="recommendationGroup" key={group}>
+              <h3>{group} Priority</h3>
+              {items.length ? items.map((item) => (
+                <div className="recommendationItem" key={`${group}-${item.title}`}>
+                  <strong>{item.title}</strong>
+                  {item.brief && <p className="muted">{item.brief}</p>}
+                </div>
+              )) : <p className="muted">No {group.toLowerCase()} priority recommendations.</p>}
+            </div>
+          ))}
+        </div>
+      </section>
 
       <h2 className="section">Content Tasks</h2>
       <table className="table">
         <thead><tr><th>Task</th><th>Type</th><th>Target Query</th><th>Priority</th><th>Brief</th></tr></thead>
-        <tbody>{tasks.map((task) => <tr key={task.id}><td>{task.title}</td><td>{task.content_type}</td><td>{task.target_query}</td><td>{task.priority}</td><td>{task.brief}</td></tr>)}</tbody>
+        <tbody>{tasks.length ? tasks.map((task) => <tr key={task.id}><td>{task.title}</td><td>{task.content_type}</td><td>{task.target_query || '-'}</td><td>{task.priority}</td><td>{task.brief || '-'}</td></tr>) : <tr><td colSpan={5}>No content tasks generated.</td></tr>}</tbody>
       </table>
 
       <h2 className="section">Example AI Answers</h2>
       <table className="table">
         <thead><tr><th>Question</th><th>Status</th><th>Sentiment</th><th>Answer</th></tr></thead>
-        <tbody>{answers.slice(0, 12).map((answer) => (
+        <tbody>{answers.length ? answers.slice(0, 12).map((answer) => (
           <tr key={answer.id}>
             <td>{answer.geo_queries?.query_text}</td>
             <td>{answer.recommendation_status}</td>
             <td>{answer.sentiment}</td>
             <td>{answer.answer_text.slice(0, 700)}</td>
           </tr>
-        ))}</tbody>
+        )) : <tr><td colSpan={4}>No AI answers are available yet.</td></tr>}</tbody>
       </table>
+
+      {canViewDebug && (
+        <details className="debugPanel noPrint section">
+          <summary>Raw Data / Debug</summary>
+          <pre className="pre">{JSON.stringify({
+            run: { id: run.id, status: run.status, processed_queries: run.processed_queries, total_queries: run.total_queries },
+            sentiment_summary: insight.sentiment_summary,
+            competitor_summary: insight.competitor_summary,
+            action_plan: insight.action_plan,
+            risk_notes: insight.risk_notes
+          }, null, 2)}</pre>
+        </details>
+      )}
     </div>
   );
 }
