@@ -58,6 +58,22 @@ export type GeoRun = {
   last_progress_at?: string | null;
 };
 
+export type GeoRunStep = {
+  id: string;
+  agency_id: string;
+  client_id: string;
+  run_id: string;
+  query_id: string | null;
+  step_type: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  title: string;
+  message: string | null;
+  metadata: Record<string, unknown>;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
+
 export type GeoAnswer = {
   id: string;
   run_id: string;

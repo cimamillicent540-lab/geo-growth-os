@@ -52,6 +52,17 @@ type SavedAnswer = {
   query_id: string | null;
 };
 
+type RunStepInput = {
+  step_type: string;
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  title: string;
+  message?: string;
+  query_id?: string | null;
+  metadata?: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
 export async function POST(req: Request) {
   const workerSecret = getEnv('INTERNAL_WORKER_SECRET') || getEnv('WORKER_SECRET');
   if (!workerSecret || req.headers.get('x-worker-secret') !== workerSecret) {
@@ -80,23 +91,47 @@ export async function POST(req: Request) {
       })
       .eq('id', run_id);
 
+    const totalQueries = Number(run.total_queries || queries.length || 0);
     const pendingQueries = queries.filter((query) => !completedQueryIds.has(query.id)).slice(0, BATCH_SIZE);
+    await logRunStep(supabase, run, client, {
+      step_type: 'batch_started',
+      status: 'running',
+      title: 'Worker batch started',
+      message: `Processing ${pendingQueries.length} pending questions.`,
+      metadata: { processed_count: completedQueryIds.size, total_queries: totalQueries, batch_size: pendingQueries.length },
+      started_at: new Date().toISOString()
+    });
 
     for (const query of pendingQueries) {
       await processOneQuerySafely({ supabase, run, client, query });
     }
 
     const processedCount = await syncProcessedCount(supabase, run_id);
-    const totalQueries = Number(run.total_queries || queries.length || 0);
 
     if (processedCount >= totalQueries || pendingQueries.length === 0) {
       await finalizeRun({ supabase, run: { ...run, total_queries: totalQueries }, client });
+      await logRunStep(supabase, run, client, {
+        step_type: 'run_completed',
+        status: 'completed',
+        title: 'Run completed',
+        message: 'Insights and content tasks are ready.',
+        metadata: { processed_count: processedCount, total_queries: totalQueries },
+        completed_at: new Date().toISOString()
+      });
       return NextResponse.json({ ok: true, status: 'completed', processed: processedCount, total: totalQueries });
     }
 
     await dispatchWorker(run_id, baseUrl, {
       background: true,
       onError: (error) => markRunFailed(supabase, run_id, error instanceof Error ? error.message : 'Worker dispatch failed')
+    });
+    await logRunStep(supabase, run, client, {
+      step_type: 'next_batch_dispatched',
+      status: 'completed',
+      title: 'Next worker batch dispatched',
+      message: 'The next batch was registered with the Cloudflare execution context.',
+      metadata: { processed_count: processedCount, total_queries: totalQueries },
+      completed_at: new Date().toISOString()
     });
     return NextResponse.json({ ok: true, status: 'running', processed: processedCount, total: totalQueries });
   } catch (error) {
@@ -156,15 +191,49 @@ async function processOneQuerySafely({
     .maybeSingle();
 
   if (existingAnswer) {
+    await logRunStep(supabase, run, client, {
+      step_type: 'query_skipped',
+      status: 'skipped',
+      title: 'Query already answered',
+      query_id: query.id,
+      message: query.query_text,
+      completed_at: new Date().toISOString()
+    });
     await syncProcessedCount(supabase, run.id);
     return;
   }
 
   try {
+    await logRunStep(supabase, run, client, {
+      step_type: 'query_started',
+      status: 'running',
+      title: 'Query processing started',
+      query_id: query.id,
+      message: query.query_text,
+      metadata: { intent_type: query.intent_type, priority: query.priority },
+      started_at: new Date().toISOString()
+    });
     await processOneQuery({ supabase, run, client, query });
+    await logRunStep(supabase, run, client, {
+      step_type: 'query_completed',
+      status: 'completed',
+      title: 'Query answered and analyzed',
+      query_id: query.id,
+      message: query.query_text,
+      completed_at: new Date().toISOString()
+    });
   } catch (error) {
     const message = describeOpenAIError(error);
     await insertFallbackAnswer({ supabase, run, client, query, message });
+    await logRunStep(supabase, run, client, {
+      step_type: 'query_failed',
+      status: 'failed',
+      title: 'Query failed with fallback answer',
+      query_id: query.id,
+      message,
+      metadata: { query_text: query.query_text },
+      completed_at: new Date().toISOString()
+    });
   } finally {
     await syncProcessedCount(supabase, run.id);
   }
@@ -316,6 +385,14 @@ async function finalizeRun({
   const mentionRate = savedAnswers.filter((answer) => answer.brand_mentioned).length / Math.max(savedAnswers.length, 1);
   const recommendationRate = savedAnswers.filter((answer) => answer.recommendation_status === 'recommended').length / Math.max(savedAnswers.length, 1);
   const insight = await buildInsight(client, savedAnswers);
+  await logRunStep(supabase, run, client, {
+    step_type: 'insight_generated',
+    status: 'completed',
+    title: 'Insight generated',
+    message: 'Visibility score, summaries, and action plan were generated.',
+    metadata: { visibility_score: visibilityScore, answers: savedAnswers.length },
+    completed_at: new Date().toISOString()
+  });
 
   const { data: existingInsight } = await supabase
     .from('geo_insights')
@@ -343,6 +420,13 @@ async function finalizeRun({
   }
 
   await ensureContentTasks({ supabase, run, client, insight, savedAnswers });
+  await logRunStep(supabase, run, client, {
+    step_type: 'content_tasks_ready',
+    status: 'completed',
+    title: 'Content tasks ready',
+    message: 'Content tasks were checked or created for this run.',
+    completed_at: new Date().toISOString()
+  });
 
   await supabase
     .from('geo_runs')
@@ -352,6 +436,32 @@ async function finalizeRun({
       processed_queries: Math.max(savedAnswers.length, Number(run.total_queries || 0))
     })
     .eq('id', run.id);
+}
+
+async function logRunStep(
+  supabase: ReturnType<typeof supabaseAdmin>,
+  run: any,
+  client: any,
+  step: RunStepInput
+) {
+  try {
+    const { error } = await supabase.from('geo_run_steps').insert({
+      agency_id: run.agency_id,
+      client_id: client.id,
+      run_id: run.id,
+      query_id: step.query_id || null,
+      step_type: step.step_type,
+      status: step.status || 'completed',
+      title: step.title,
+      message: step.message || null,
+      metadata: step.metadata || {},
+      started_at: step.started_at || null,
+      completed_at: step.completed_at || (step.status === 'completed' ? new Date().toISOString() : null)
+    });
+    if (error) console.warn('[geo_run_steps:insert_failed]', { run_id: run.id, step_type: step.step_type, error: error.message });
+  } catch (error) {
+    console.warn('[geo_run_steps:insert_error]', { run_id: run.id, step_type: step.step_type, error: error instanceof Error ? error.message : 'Unknown step insert error' });
+  }
 }
 
 async function buildInsight(client: any, savedAnswers: SavedAnswer[]): Promise<InsightResult> {

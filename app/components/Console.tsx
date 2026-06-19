@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { AuthGate } from '@/app/components/AuthGate';
 import { supabaseBrowser, supabaseConfigured } from '@/lib/supabaseBrowser';
-import type { Client, ContentTask, GeoAnswer, GeoInsight, GeoQuery, GeoRun, UserProfile } from '@/lib/types';
+import type { Client, ContentTask, GeoAnswer, GeoInsight, GeoQuery, GeoRun, GeoRunStep, UserProfile } from '@/lib/types';
 
 type LoadState<T> = {
   loading: boolean;
@@ -61,6 +61,10 @@ function percent(value?: number | null) {
 
 function jsonList(value: unknown) {
   return Array.isArray(value) ? value.map(String) : [];
+}
+
+function formatDateTime(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : '-';
 }
 
 async function parseActionResponse(response: Response) {
@@ -210,6 +214,91 @@ export function DashboardPage() {
           </table>
         </div>
       </div>
+    </AuthGate>
+  );
+}
+
+type RunWithClient = GeoRun & {
+  clients?: Pick<Client, 'id' | 'name' | 'website' | 'industry'> | null;
+  geo_insights?: Pick<GeoInsight, 'visibility_score' | 'mention_rate' | 'recommendation_rate'>[] | null;
+};
+
+export function RunListPage() {
+  const supabase = useSupabase();
+  const [runs, setRuns] = useState<RunWithClient[]>([]);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken(supabase);
+      if (!token) throw new Error('Missing login session. Please sign in again.');
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      const response = await fetch(`/api/geo/runs${params.size ? `?${params}` : ''}`, {
+        headers: { authorization: `Bearer ${token}` },
+        cache: 'no-store'
+      });
+      const result = await parseActionResponse(response) as { runs?: RunWithClient[]; error?: string };
+      if (!response.ok) throw new Error(result.error || 'Could not load runs.');
+      setRuns(result.runs || []);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load runs.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [status]);
+
+  return (
+    <AuthGate>
+      <div className="hero">
+        <div>
+          <h1>GEO Runs</h1>
+          <p className="muted">Track run status, progress, and generated insights across client workspaces.</p>
+        </div>
+        <div className="filters">
+          <select className="input compact" value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+          <button className="btn" onClick={load}>Refresh</button>
+        </div>
+      </div>
+
+      {loading && <div className="empty section">Loading runs...</div>}
+      {error && <div className="empty dangerText section">{error}</div>}
+
+      <table className="table section">
+        <thead><tr><th>Run</th><th>Client</th><th>Status</th><th>Progress</th><th>Score</th><th>Started</th><th></th></tr></thead>
+        <tbody>{runs.map((run) => {
+          const progress = run.total_queries ? Math.round((Number(run.processed_queries || 0) / Number(run.total_queries || 1)) * 100) : 0;
+          const insight = run.geo_insights?.[0];
+          return (
+            <tr key={run.id}>
+              <td>{run.run_name}</td>
+              <td>{run.clients?.name || run.client_id}</td>
+              <td><span className={`pill ${run.status === 'completed' ? 'ok' : run.status === 'failed' ? 'danger' : ''}`}>{run.status}</span></td>
+              <td>
+                <div className="bar"><i style={{ width: `${progress}%` }} /></div>
+                <p className="muted tableNote">{run.processed_queries} / {run.total_queries}</p>
+              </td>
+              <td>{insight ? Math.round(Number(insight.visibility_score || 0)) : '-'}</td>
+              <td>{formatDateTime(run.started_at || run.created_at)}</td>
+              <td><Link className="btn small" href={`/clients/${run.client_id}/runs/${run.id}`}>Open</Link></td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
     </AuthGate>
   );
 }
@@ -622,15 +711,33 @@ export function QueriesPage({ clientId }: { clientId: string }) {
 
 export function RunResultPage({ clientId, runId }: { clientId: string; runId: string }) {
   const supabase = useSupabase();
-  const [data, setData] = useState<{ run: GeoRun | null; insight: GeoInsight | null; answers: Array<GeoAnswer & { geo_queries?: GeoQuery }> }>({ run: null, insight: null, answers: [] });
+  const [data, setData] = useState<{
+    run: GeoRun | null;
+    insight: GeoInsight | null;
+    answers: Array<GeoAnswer & { geo_queries?: GeoQuery }>;
+    steps: Array<GeoRunStep & { geo_queries?: Pick<GeoQuery, 'query_text' | 'intent_type' | 'priority'> }>;
+  }>({ run: null, insight: null, answers: [], steps: [] });
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [resumeBusy, setResumeBusy] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
   useEffect(() => {
     let stop = false;
+    async function loadSteps() {
+      const token = await getToken(supabase);
+      if (!token || stop) return;
+      const response = await fetch(`/api/geo/runs/${runId}/steps`, {
+        headers: { authorization: `Bearer ${token}` },
+        cache: 'no-store'
+      });
+      if (!response.ok || stop) return;
+      const result = await response.json() as { steps?: Array<GeoRunStep & { geo_queries?: Pick<GeoQuery, 'query_text' | 'intent_type' | 'priority'> }> };
+      setData((current) => ({ ...current, steps: result.steps || [] }));
+      setSelectedStepId((current) => current || result.steps?.[result.steps.length - 1]?.id || null);
+    }
     async function load() {
       if (!supabaseConfigured()) {
-        setData({ run: null, insight: null, answers: [] });
+        setData({ run: null, insight: null, answers: [], steps: [] });
         return;
       }
       const [{ data: run }, { data: insight }, { data: answers }] = await Promise.all([
@@ -638,7 +745,13 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
         supabase.from('geo_insights').select('*').eq('run_id', runId).maybeSingle(),
         supabase.from('geo_answers').select('*, geo_queries(*)').eq('run_id', runId).order('created_at', { ascending: true })
       ]);
-      setData({ run: (run as GeoRun | null) || null, insight: (insight as GeoInsight | null) || null, answers: (answers as Array<GeoAnswer & { geo_queries?: GeoQuery }>) || [] });
+      setData((current) => ({
+        ...current,
+        run: (run as GeoRun | null) || null,
+        insight: (insight as GeoInsight | null) || null,
+        answers: (answers as Array<GeoAnswer & { geo_queries?: GeoQuery }>) || []
+      }));
+      await loadSteps();
     }
     load();
     const interval = setInterval(async () => {
@@ -654,6 +767,8 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
       if (nextRun.status === 'completed') {
         clearInterval(interval);
         await load();
+      } else {
+        await loadSteps();
       }
     }, 2500);
     return () => {
@@ -688,6 +803,7 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
 
   const competitorCounts: Record<string, number> = {};
   data.answers.forEach((answer) => answer.competitors_mentioned.forEach((name) => { competitorCounts[name] = (competitorCounts[name] || 0) + 1; }));
+  const selectedStep = data.steps.find((step) => step.id === selectedStepId) || data.steps[data.steps.length - 1] || null;
 
   return (
     <AuthGate>
@@ -706,6 +822,59 @@ export function RunResultPage({ clientId, runId }: { clientId: string; runId: st
         <Stat label="Visibility Score" value={Math.round(Number(data.insight?.visibility_score || 0))} />
         <Stat label="Mention Rate" value={percent(Number(data.insight?.mention_rate || 0))} />
         <Stat label="Recommendation Rate" value={percent(Number(data.insight?.recommendation_rate || 0))} />
+      </div>
+      <div className="row section">
+        <div className="card">
+          <h2>Run Timeline</h2>
+          <div className="timeline">
+            {data.steps.length ? data.steps.map((step) => (
+              <button
+                key={step.id}
+                className={`timelineItem ${selectedStep?.id === step.id ? 'active' : ''}`}
+                onClick={() => setSelectedStepId(step.id)}
+              >
+                <span className={`dot ${step.status}`} />
+                <span>
+                  <strong>{step.title}</strong>
+                  <small>{step.status} | {formatDateTime(step.created_at)}</small>
+                </span>
+              </button>
+            )) : <p className="muted">No run steps have been recorded yet. Apply the latest migration before running new tests.</p>}
+          </div>
+        </div>
+        <div className="card">
+          <h2>Step Viewer</h2>
+          {selectedStep ? (
+            <>
+              <p><strong>{selectedStep.title}</strong></p>
+              <p className="muted">{selectedStep.message || selectedStep.geo_queries?.query_text || 'No message recorded.'}</p>
+              <div className="metaGrid">
+                <p><span className="muted">Type</span><strong>{selectedStep.step_type}</strong></p>
+                <p><span className="muted">Status</span><strong>{selectedStep.status}</strong></p>
+              </div>
+              <pre className="pre section">{JSON.stringify(selectedStep.metadata || {}, null, 2)}</pre>
+            </>
+          ) : <p className="muted">Select a timeline step to inspect metadata.</p>}
+        </div>
+      </div>
+      <div className="card section">
+        <h2>Insight Viewer</h2>
+        {data.insight ? (
+          <div className="row">
+            <div>
+              <p><strong>Executive Summary</strong></p>
+              <p>{data.insight.executive_summary || 'No summary yet.'}</p>
+              <p><strong>Content Gaps</strong></p>
+              <ul>{jsonList(data.insight.content_gaps).map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+            <pre className="pre">{JSON.stringify({
+              competitor_summary: data.insight.competitor_summary,
+              sentiment_summary: data.insight.sentiment_summary,
+              action_plan: data.insight.action_plan,
+              risk_notes: data.insight.risk_notes
+            }, null, 2)}</pre>
+          </div>
+        ) : <p className="muted">Insight will appear when the run completes.</p>}
       </div>
       {(data.run?.status === 'pending' || data.run?.status === 'running') && (
         <div className="card section">

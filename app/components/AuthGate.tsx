@@ -101,6 +101,7 @@ export function AppNav() {
       <div className="navlinks">
         <Link href="/dashboard">Dashboard</Link>
         <Link href="/clients">Clients</Link>
+        <Link href="/runs">Runs</Link>
         <Link href="/clients/new">New Client</Link>
         <button
           className="navbutton"
