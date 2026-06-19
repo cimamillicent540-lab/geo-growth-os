@@ -302,6 +302,82 @@ textarea {
   color: var(--muted);
 }
 
+.tableNote {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.timeline {
+  display: grid;
+  gap: 8px;
+}
+
+.timelineItem {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.timelineItem.active {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(36, 84, 214, 0.12);
+}
+
+.timelineItem small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.dot.completed {
+  background: var(--ok);
+}
+
+.dot.failed {
+  background: var(--danger);
+}
+
+.dot.running {
+  background: var(--brand);
+}
+
+.dot.skipped {
+  background: #98a2b3;
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metaGrid p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
 .bar {
   height: 10px;
   width: 100%;
