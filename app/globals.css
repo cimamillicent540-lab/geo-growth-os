@@ -406,9 +406,119 @@ textarea {
   border-bottom: 1px solid var(--line);
 }
 
+.reportHeader {
+  align-items: flex-start;
+}
+
+.reportStatusLine {
+  margin-top: 10px;
+}
+
+.reportMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.reportMetrics div,
+.summaryCard,
+.reportMiniCard,
+.recommendationGroup,
+.debugPanel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.reportMetrics div {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.reportMetrics strong {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.reportSection h2 {
+  margin-bottom: 10px;
+}
+
+.summaryCard {
+  padding: 16px;
+  background: #f9fafb;
+}
+
+.summaryCard p {
+  margin-bottom: 0;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.reportCards,
+.recommendationGroups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.reportMiniCard,
+.recommendationGroup {
+  padding: 14px;
+}
+
+.miniCardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.reportList {
+  display: grid;
+  gap: 10px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.reportList li,
+.recommendationItem {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.recommendationGroup h3 {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.recommendationItem + .recommendationItem {
+  margin-top: 10px;
+}
+
+.recommendationItem p {
+  margin: 6px 0 0;
+}
+
+.debugPanel {
+  padding: 14px;
+}
+
+.debugPanel summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
 @media (max-width: 920px) {
   .grid,
-  .row {
+  .row,
+  .reportMetrics,
+  .reportCards,
+  .recommendationGroups {
     grid-template-columns: 1fr;
   }
 
@@ -442,17 +552,47 @@ textarea {
   }
 
   .nav,
-  .noPrint {
+  .noPrint,
+  .debugPanel {
     display: none !important;
   }
 
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
   .report {
+    max-width: 190mm;
+    margin: 0 auto;
     border: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .reportMetrics,
+  .reportCards,
+  .recommendationGroups {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .reportMiniCard,
+  .recommendationGroup,
+  .summaryCard,
+  .reportMetrics div {
     box-shadow: none;
   }
 
   .card,
-  .table {
+  .table,
+  .reportSection,
+  .reportMiniCard,
+  .recommendationGroup,
+  .summaryCard {
     break-inside: avoid;
+  }
+
+  .table {
+    font-size: 11px;
   }
 }
